@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
-import { api } from '../services/api/client';
+import { api, setUnauthorizedHandler } from '../services/api/client';
 import { UserProfile } from '../types/user';
 import { usePaymentProfileStore } from './paymentProfileStore';
 import { useFriendStore } from './friendStore';
@@ -68,6 +68,7 @@ interface AuthState {
   biometricsEnabled: boolean;
 
   initAuth: () => Promise<void>;
+  invalidateSession: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   loginWithBiometrics: () => Promise<void>;
   signup: (input: SignupInput) => Promise<void>;
@@ -120,6 +121,15 @@ async function persistSession(user: UserProfile, token: string) {
   ]);
 }
 
+async function clearStoredSession() {
+  await Promise.all([
+    SecureStore.deleteItemAsync(SECURE_KEYS.USER),
+    SecureStore.deleteItemAsync(SECURE_KEYS.TOKEN),
+    SecureStore.deleteItemAsync(SECURE_KEYS.PIN),
+    SecureStore.deleteItemAsync(SECURE_KEYS.BIOMETRICS),
+  ]);
+}
+
 function clearClientSessionState() {
   usePaymentProfileStore.getState().clearPaymentProfile();
   useWalletStore.getState().clearWallet();
@@ -164,10 +174,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           isInitialized: true,
         });
       } catch {
-        await Promise.all([
-          SecureStore.deleteItemAsync(SECURE_KEYS.USER),
-          SecureStore.deleteItemAsync(SECURE_KEYS.TOKEN),
-        ]);
+        await clearStoredSession();
         clearClientSessionState();
         set({
           user: null,
@@ -181,6 +188,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       console.warn('Failed to initialize auth state');
       set({ isInitialized: true });
     }
+  },
+
+  invalidateSession: async () => {
+    try {
+      await clearStoredSession();
+    } catch {
+      console.warn('Failed to clear expired session');
+    }
+
+    clearClientSessionState();
+    set({
+      user: null,
+      isAuthenticated: false,
+      isLoading: false,
+      isInitialized: true,
+      pin: '',
+      biometricsEnabled: false,
+    });
   },
 
   login: async (email: string, password: string) => {
@@ -239,12 +264,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ isLoading: true });
     try {
       await api.post('/auth/logout').catch(() => {});
-      await Promise.all([
-        SecureStore.deleteItemAsync(SECURE_KEYS.USER),
-        SecureStore.deleteItemAsync(SECURE_KEYS.TOKEN),
-        SecureStore.deleteItemAsync(SECURE_KEYS.PIN),
-        SecureStore.deleteItemAsync(SECURE_KEYS.BIOMETRICS),
-      ]);
+      await clearStoredSession();
     } catch {
       console.warn('Failed to clear secure storage during logout');
     }
@@ -322,3 +342,5 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 }));
+
+setUnauthorizedHandler(() => useAuthStore.getState().invalidateSession());

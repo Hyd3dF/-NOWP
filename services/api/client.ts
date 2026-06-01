@@ -17,6 +17,7 @@ const localApiUrl = Platform.select({
 });
 
 const DEVICE_ID_KEY = 'oroya_device_id';
+let unauthorizedHandler: (() => Promise<void> | void) | null = null;
 
 export class ApiError extends Error {
   code: string;
@@ -28,6 +29,10 @@ export class ApiError extends Error {
     this.code = code;
     this.status = status;
   }
+}
+
+export function setUnauthorizedHandler(handler: (() => Promise<void> | void) | null) {
+  unauthorizedHandler = handler;
 }
 
 function getExpoLanApiUrl() {
@@ -87,6 +92,10 @@ class OroyaApiClient {
       console.warn('Failed to retrieve auth token from secure store');
     }
 
+    if (!headers.Authorization) {
+      throw new ApiError('auth_required', 401);
+    }
+
     return headers;
   }
 
@@ -111,6 +120,9 @@ class OroyaApiClient {
     const data = parseJsonResponse(text);
 
     if (!response.ok) {
+      if (!options.skipAuth && (response.status === 401 || response.status === 403)) {
+        await unauthorizedHandler?.();
+      }
       throw new ApiError(getErrorCode(response.status, data), response.status);
     }
 
