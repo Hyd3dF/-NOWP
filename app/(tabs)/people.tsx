@@ -58,6 +58,7 @@ export default function PeopleScreen() {
           friendId: contact.user.id,
           name: contact.user.displayName,
           username: contact.user.username,
+          avatarUrl: contact.user.avatarUrl || '',
         },
       });
       return;
@@ -72,6 +73,7 @@ export default function PeopleScreen() {
           friendId: contact.user.id,
           name: contact.user.displayName,
           username: contact.user.username,
+          avatarUrl: contact.user.avatarUrl || '',
         },
       });
     } catch {

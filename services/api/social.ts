@@ -27,9 +27,19 @@ export interface ChatMessage {
   senderUserId: string;
   receiverUserId: string;
   message: string;
+  messageType: 'text' | 'money_gift' | 'system';
+  metadata?: {
+    amount?: number;
+    currency?: string;
+    title?: string;
+    subtitle?: string;
+    status?: string;
+  };
   status: string;
   createdAt: string;
   readAt?: string;
+  senderAvatar?: string | null;
+  receiverAvatar?: string | null;
 }
 
 export async function fetchFriends() {
@@ -78,10 +88,19 @@ export async function fetchChatMessages(threadId: string) {
   return response.messages;
 }
 
-export async function sendChatMessage(threadId: string, message: string) {
+export async function sendChatMessage(
+  threadId: string,
+  message: string,
+  options?: {
+    messageType?: ChatMessage['messageType'];
+    metadata?: ChatMessage['metadata'];
+  },
+) {
   const response = await api.post<{ success: boolean; message: ChatMessage }>('/chats/messages', {
     thread_id: threadId,
     message,
+    message_type: options?.messageType || 'text',
+    metadata: options?.metadata || {},
   });
   return response.message;
 }

@@ -66,6 +66,10 @@ async function createMessage(req, res) {
   const requestContext = getRequestContext(req);
   const threadId = pickString(body, 'thread_id') || pickString(body, 'threadId');
   const messageText = pickString(body, 'message');
+  const messageType = pickString(body, 'message_type') || pickString(body, 'messageType') || 'text';
+  const metadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+    ? body.metadata
+    : {};
 
   if (!threadId) {
     throw new HttpError(400, 'thread_id is required.');
@@ -75,6 +79,8 @@ async function createMessage(req, res) {
     threadId,
     senderUserId: user.id,
     message: messageText,
+    messageType,
+    metadata,
   });
 
   await pocketBase.createAuditLog({

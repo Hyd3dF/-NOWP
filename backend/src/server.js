@@ -14,7 +14,7 @@ const {
 const { createDeposit, depositCurrencies, nowPaymentsWebhook } = require('./routes/payments');
 const { myTransactions } = require('./routes/transactions');
 const { sendTransfer } = require('./routes/transfers');
-const { me, paymentProfile } = require('./routes/users');
+const { me, paymentProfile, updateMe } = require('./routes/users');
 const { myWallets } = require('./routes/wallets');
 
 const routes = new Map([
@@ -22,6 +22,7 @@ const routes = new Map([
   ['POST /auth/login', login],
   ['POST /auth/logout', logout],
   ['GET /users/me', me],
+  ['POST /users/me/update', updateMe],
   ['GET /users/payment-profile', paymentProfile],
   ['GET /wallets/me', myWallets],
   ['GET /friends', listFriends],

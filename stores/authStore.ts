@@ -34,6 +34,11 @@ interface MeResponse {
   user: BackendUser;
 }
 
+interface UpdateProfileResponse {
+  success: boolean;
+  user: BackendUser;
+}
+
 export interface SignupInput {
   firstName: string;
   lastName: string;
@@ -47,6 +52,12 @@ export interface SignupInput {
   profilePhotoMime?: string;
   profilePhotoName?: string;
 }
+
+type ProfileUpdateInput = Partial<UserProfile> & {
+  profilePhotoBase64?: string;
+  profilePhotoMime?: string;
+  profilePhotoName?: string;
+};
 
 interface AuthState {
   user: UserProfile | null;
@@ -63,7 +74,7 @@ interface AuthState {
   logout: () => Promise<void>;
   setPin: (pin: string) => Promise<void>;
   verifyPin: (pin: string) => boolean;
-  updateProfile: (updates: Partial<UserProfile>) => Promise<void>;
+  updateProfile: (updates: ProfileUpdateInput) => Promise<void>;
   setBiometricsEnabled: (enabled: boolean) => Promise<void>;
 }
 
@@ -261,11 +272,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     return get().pin === pin;
   },
 
-  updateProfile: async (updates: Partial<UserProfile>) => {
+  updateProfile: async (updates: ProfileUpdateInput) => {
     const currentUser = get().user;
     if (!currentUser) return;
 
-    const updatedUser = { ...currentUser, ...updates };
+    const response = await api.post<UpdateProfileResponse>('/users/me/update', {
+      display_name: updates.displayName ?? currentUser.displayName,
+      username: updates.username ?? currentUser.username,
+      phone: updates.phone ?? currentUser.phone,
+      profile_photo_base64: updates.profilePhotoBase64 || undefined,
+      profile_photo_mime: updates.profilePhotoMime || undefined,
+      profile_photo_name: updates.profilePhotoName || undefined,
+    });
+    const updatedUser = mapBackendUser(response.user);
 
     try {
       await SecureStore.setItemAsync(SECURE_KEYS.USER, JSON.stringify(updatedUser));

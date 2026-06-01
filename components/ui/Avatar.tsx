@@ -1,4 +1,5 @@
-import { Image, StyleSheet, Text, View, StyleProp, ViewStyle } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Image, StyleSheet, Text, View, StyleProp } from 'react-native';
 import { colors } from '../../theme/colors';
 import { getInitials } from '../../utils/format';
 
@@ -43,14 +44,20 @@ export const Avatar: React.FC<AvatarProps> = ({
   size = 44,
   style,
 }) => {
+  const [imageFailed, setImageFailed] = useState(false);
   const initials = getInitials(name);
   const backgroundColor = getColorFromName(name);
   const fontSize = size * 0.38;
 
-  if (uri) {
+  useEffect(() => {
+    setImageFailed(false);
+  }, [uri]);
+
+  if (uri && !imageFailed) {
     return (
       <Image
         source={{ uri }}
+        onError={() => setImageFailed(true)}
         style={[
           styles.image,
           {

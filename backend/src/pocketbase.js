@@ -281,10 +281,11 @@ class PocketBaseClient {
     };
 
     if (!input.profile_photo_base64) {
-      return this.adminRequest('/api/collections/users/records', {
+      const user = await this.adminRequest('/api/collections/users/records', {
         method: 'POST',
         body,
       });
+      return this.withUserFileUrls(user);
     }
 
     const formData = new FormData();
@@ -312,7 +313,7 @@ class PocketBaseClient {
     if (!response.ok) {
       throw new HttpError(response.status, data?.message || 'Failed to create user.', data?.data || data);
     }
-    return data;
+    return this.withUserFileUrls(data);
   }
 
   async updateUser(userId, patch) {
@@ -325,11 +326,58 @@ class PocketBaseClient {
     });
   }
 
+  async updateUserProfile(userId, input) {
+    const [firstName, ...lastNameParts] = String(input.displayName || '').trim().split(/\s+/);
+    const body = {
+      first_name: firstName || '',
+      last_name: lastNameParts.join(' '),
+      username: input.username || '',
+      phone: input.phone || '',
+      updated_at: new Date().toISOString(),
+    };
+
+    if (!input.profile_photo_base64) {
+      const user = await this.updateUser(userId, body);
+      return this.withUserFileUrls(user);
+    }
+
+    const formData = new FormData();
+    for (const [key, value] of Object.entries(body)) {
+      formData.append(key, String(value));
+    }
+
+    const mimeType = input.profile_photo_mime || 'image/jpeg';
+    const fileName = sanitizeFileName(input.profile_photo_name || 'profile-photo.jpg');
+    const fileBuffer = Buffer.from(input.profile_photo_base64, 'base64');
+    formData.append('profile_photo_file', new Blob([fileBuffer], { type: mimeType }), fileName);
+
+    const token = await this.getSuperuserToken();
+    const response = await fetch(`${this.baseUrl}/api/collections/users/records/${encodeURIComponent(userId)}`, {
+      method: 'PATCH',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    });
+
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!response.ok) {
+      throw new HttpError(response.status, data?.message || 'Failed to update user.', data?.data || data);
+    }
+    return this.withUserFileUrls(data);
+  }
+
   async authenticateUser(identity, password) {
-    return this.request('/api/collections/users/auth-with-password', {
+    const auth = await this.request('/api/collections/users/auth-with-password', {
       method: 'POST',
       body: { identity, password },
     });
+    return {
+      ...auth,
+      record: this.withUserFileUrls(auth.record),
+    };
   }
 
   verifyUserPin(user, pin) {
@@ -356,7 +404,7 @@ class PocketBaseClient {
       token,
     });
 
-    return auth.record;
+    return this.withUserFileUrls(auth.record);
   }
 
   async createWallet(userId, currency = config.defaultWalletCurrency) {
@@ -674,11 +722,23 @@ class PocketBaseClient {
 
   async getUserById(userId) {
     try {
-      return await this.adminRequest(`/api/collections/users/records/${encodeURIComponent(userId)}`);
+      const user = await this.adminRequest(`/api/collections/users/records/${encodeURIComponent(userId)}`);
+      return this.withUserFileUrls(user);
     } catch (error) {
       if (error.status === 404) return null;
       throw error;
     }
+  }
+
+  withUserFileUrls(user) {
+    if (!user) return user;
+    const profilePhotoUrl = user.profile_photo_url || getRecordFileUrl(this.baseUrl, 'users', user, 'profile_photo_file');
+    const selfiePhotoUrl = user.selfie_photo_url || getRecordFileUrl(this.baseUrl, 'users', user, 'selfie_photo_file');
+    return {
+      ...user,
+      profile_photo_url: profilePhotoUrl,
+      selfie_photo_url: selfiePhotoUrl,
+    };
   }
 
   async findPaymentProfileByTag(paymentTag) {
@@ -726,7 +786,7 @@ class PocketBaseClient {
       displayName: getDisplayName(user),
       username: user.username || '',
       phone: user.phone || '',
-      avatarUrl: user.profile_photo_url || '',
+      avatarUrl: user.profile_photo_url || getRecordFileUrl(this.baseUrl, 'users', user, 'profile_photo_file'),
       oroyaId: profile.payment_tag,
     };
   }
@@ -926,28 +986,47 @@ class PocketBaseClient {
       `/api/collections/chat_messages/records?filter=${filter}&sort=created_at&perPage=100`,
     );
 
-    return (result.items || []).map((message) => ({
-      id: message.id,
-      threadId: message.thread_id,
-      senderUserId: message.sender_user_id,
-      receiverUserId: message.receiver_user_id,
-      message: message.message,
-      status: message.status,
-      createdAt: message.created_at || message.created,
-      readAt: message.read_at || '',
-    }));
+    const messages = [];
+    for (const message of result.items || []) {
+      const sender = await this.getUserById(message.sender_user_id);
+      const receiver = await this.getUserById(message.receiver_user_id);
+      messages.push({
+        id: message.id,
+        threadId: message.thread_id,
+        senderUserId: message.sender_user_id,
+        receiverUserId: message.receiver_user_id,
+        message: message.message,
+        messageType: normalizeChatMessageType(message.message_type),
+        metadata: normalizeChatMetadata(message.metadata),
+        status: message.status,
+        createdAt: message.created_at || message.created,
+        readAt: message.read_at || '',
+        senderAvatar: sender?.profile_photo_url || '',
+        receiverAvatar: receiver?.profile_photo_url || '',
+      });
+    }
+
+    return messages;
   }
 
-  async createChatMessage({ threadId, senderUserId, message }) {
+  async createChatMessage({ threadId, senderUserId, message, messageType = 'text', metadata = {} }) {
     const thread = await this.getChatThreadForUser(threadId, senderUserId);
     const receiverUserId = thread.user_a_id === senderUserId ? thread.user_b_id : thread.user_a_id;
+    const friendship = await this.findFriendship(senderUserId, receiverUserId);
+    if (!friendship || friendship.status !== 'accepted') {
+      throw new HttpError(403, 'You can only message accepted friends.');
+    }
+
+    const cleanType = normalizeChatMessageType(messageType);
+    const cleanMetadata = normalizeChatMetadata(metadata);
     const cleanMessage = String(message || '').trim();
     if (!cleanMessage) {
       throw new HttpError(400, 'Message is required.');
     }
-    if (cleanMessage.length > 2000) {
+    if (cleanMessage.length > 1000) {
       throw new HttpError(400, 'Message is too long.');
     }
+    validateChatMessagePayload(cleanType, cleanMessage, cleanMetadata);
 
     const now = new Date().toISOString();
     const record = await this.adminRequest('/api/collections/chat_messages/records', {
@@ -957,6 +1036,8 @@ class PocketBaseClient {
         sender_user_id: senderUserId,
         receiver_user_id: receiverUserId,
         message: cleanMessage,
+        message_type: cleanType,
+        metadata: cleanMetadata,
         status: 'sent',
         created_at: now,
         read_at: '',
@@ -966,7 +1047,7 @@ class PocketBaseClient {
     await this.adminRequest(`/api/collections/chat_threads/records/${encodeURIComponent(thread.id)}`, {
       method: 'PATCH',
       body: {
-        last_message: cleanMessage.slice(0, 1000),
+        last_message: getChatThreadPreview(cleanType, cleanMessage, cleanMetadata),
         last_message_at: now,
         updated_at: now,
       },
@@ -978,6 +1059,8 @@ class PocketBaseClient {
       senderUserId: record.sender_user_id,
       receiverUserId: record.receiver_user_id,
       message: record.message,
+      messageType: cleanType,
+      metadata: cleanMetadata,
       status: record.status,
       createdAt: record.created_at || record.created,
       readAt: record.read_at || '',
@@ -1052,6 +1135,12 @@ function sanitizeLogString(value, maxLength) {
 
 function sanitizeUser(record) {
   if (!record) return null;
+  const profilePhotoUrl =
+    record.profile_photo_url ||
+    getRecordFileUrl(config.pocketBase.url, 'users', record, 'profile_photo_file');
+  const selfiePhotoUrl =
+    record.selfie_photo_url ||
+    getRecordFileUrl(config.pocketBase.url, 'users', record, 'selfie_photo_file');
 
   const {
     pin_hash: _pinHash,
@@ -1064,7 +1153,11 @@ function sanitizeUser(record) {
     ...safe
   } = record;
 
-  return safe;
+  return {
+    ...safe,
+    profile_photo_url: profilePhotoUrl,
+    selfie_photo_url: selfiePhotoUrl,
+  };
 }
 
 function normalizeCurrency(currency) {
@@ -1095,6 +1188,13 @@ function getDisplayName(user) {
     user.email ||
     'Oroya User'
   );
+}
+
+function getRecordFileUrl(baseUrl, collectionName, record, fieldName) {
+  const fileName = Array.isArray(record?.[fieldName]) ? record[fieldName][0] : record?.[fieldName];
+  if (!fileName || !record?.id) return '';
+  const collection = record.collectionId || record.collectionName || collectionName;
+  return `${baseUrl}/api/files/${encodeURIComponent(collection)}/${encodeURIComponent(record.id)}/${encodeURIComponent(fileName)}`;
 }
 
 function sortUserPair(userId, friendUserId) {
@@ -1139,6 +1239,54 @@ function normalizeIdList(value) {
   }
 
   return [];
+}
+
+function normalizeChatMessageType(value) {
+  const type = String(value || 'text').trim().toLowerCase();
+  return ['text', 'money_gift', 'system'].includes(type) ? type : 'text';
+}
+
+function normalizeChatMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+
+  return {
+    ...(value.amount !== undefined ? { amount: Number(value.amount) } : {}),
+    ...(value.currency ? { currency: String(value.currency).trim().toUpperCase().slice(0, 12) } : {}),
+    ...(value.title ? { title: sanitizeLogString(value.title, 80) } : {}),
+    ...(value.subtitle ? { subtitle: sanitizeLogString(value.subtitle, 140) } : {}),
+    ...(value.status ? { status: sanitizeLogString(value.status, 40) } : {}),
+    demo: true,
+  };
+}
+
+function validateChatMessagePayload(type, message, metadata) {
+  if (type === 'text') return;
+  if (type !== 'money_gift') {
+    throw new HttpError(400, 'Unsupported chat message type.');
+  }
+
+  const amount = Number(metadata.amount || 0);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1000) {
+    throw new HttpError(400, 'Gift amount is invalid.');
+  }
+
+  if (!/^[A-Z0-9]{2,12}$/.test(String(metadata.currency || 'USD'))) {
+    throw new HttpError(400, 'Gift currency is invalid.');
+  }
+
+  if (message.length > 180) {
+    throw new HttpError(400, 'Gift message is too long.');
+  }
+}
+
+function getChatThreadPreview(type, message, metadata) {
+  if (type === 'money_gift') {
+    const amount = Number(metadata.amount || 0).toFixed(2);
+    const currency = metadata.currency || config.defaultWalletCurrency;
+    return `Gift ${amount} ${currency}`;
+  }
+
+  return message.slice(0, 1000);
 }
 
 const pocketBase = new PocketBaseClient();

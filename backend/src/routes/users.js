@@ -1,4 +1,4 @@
-const { getBearerToken, getRequestContext, sendJson } = require('../http');
+const { getBearerToken, getRequestContext, parseJsonBody, sendJson } = require('../http');
 const { pocketBase, sanitizeUser } = require('../pocketbase');
 
 async function me(req, res) {
@@ -45,4 +45,38 @@ async function paymentProfile(req, res) {
   });
 }
 
-module.exports = { me, paymentProfile };
+async function updateMe(req, res) {
+  const token = getBearerToken(req);
+  const user = await pocketBase.authenticateBearer(token);
+  const body = await parseJsonBody(req);
+  const requestContext = getRequestContext(req);
+
+  const updatedUser = await pocketBase.updateUserProfile(user.id, {
+    displayName: typeof body.display_name === 'string' ? body.display_name : '',
+    username: typeof body.username === 'string' ? body.username.trim().toLowerCase() : '',
+    phone: typeof body.phone === 'string' ? body.phone.trim() : '',
+    profile_photo_base64:
+      typeof body.profile_photo_base64 === 'string' ? body.profile_photo_base64 : '',
+    profile_photo_mime:
+      typeof body.profile_photo_mime === 'string' ? body.profile_photo_mime : '',
+    profile_photo_name:
+      typeof body.profile_photo_name === 'string' ? body.profile_photo_name : '',
+  });
+
+  await pocketBase.createAuditLog({
+    userId: user.id,
+    action: 'users.update_me',
+    ...requestContext,
+    metadata: {
+      username: updatedUser.username || '',
+      has_profile_photo: Boolean(updatedUser.profile_photo_url),
+    },
+  });
+
+  sendJson(res, 200, {
+    success: true,
+    user: sanitizeUser(updatedUser),
+  });
+}
+
+module.exports = { me, paymentProfile, updateMe };

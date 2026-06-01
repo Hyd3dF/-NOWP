@@ -32,6 +32,9 @@ export default function EditProfileScreen() {
   const [username, setUsername] = useState(user?.username || '');
   const [phone, setPhone] = useState(user?.phone || '');
   const [avatarUri, setAvatarUri] = useState<string | null>(user?.avatarUrl || null);
+  const [avatarBase64, setAvatarBase64] = useState('');
+  const [avatarMime, setAvatarMime] = useState('');
+  const [avatarName, setAvatarName] = useState('');
 
   const [nameError, setNameError] = useState('');
   const [usernameError, setUsernameError] = useState('');
@@ -52,10 +55,15 @@ export default function EditProfileScreen() {
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.7,
+        base64: true,
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
-        setAvatarUri(result.assets[0].uri);
+        const asset = result.assets[0];
+        setAvatarUri(asset.uri);
+        setAvatarBase64(asset.base64 || '');
+        setAvatarMime(asset.mimeType || 'image/jpeg');
+        setAvatarName(asset.fileName || 'profile-photo.jpg');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       }
     } catch {
@@ -96,6 +104,9 @@ export default function EditProfileScreen() {
         username: username.trim(),
         phone: phone.trim(),
         avatarUrl: avatarUri,
+        profilePhotoBase64: avatarBase64 || undefined,
+        profilePhotoMime: avatarMime || undefined,
+        profilePhotoName: avatarName || undefined,
       });
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
