@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "Oroya",
+    "slug": "oroya",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "oroya",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Oroya, yalnızca selfie veya doğrulama fotoğrafı çekmek istediğinizde kamera erişimine ihtiyaç duyar."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Oroya, yalnızca profil fotoğrafı veya doğrulama görseli seçtiğinizde galeri erişimine ihtiyaç duyar.",
+          "cameraPermission": "Oroya, yalnızca profil fotoğrafı veya selfie çekmek istediğinizde kamera erişimine ihtiyaç duyar."
+        }
+      ]
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.oroya.app",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Oroya, yalnızca profil fotoğrafı veya doğrulama görseli seçtiğinizde galeri erişimine ihtiyaç duyar.",
+        "NSCameraUsageDescription": "Oroya, yalnızca profil fotoğrafı veya selfie çekmek istediğinizde kamera erişimine ihtiyaç duyar.",
+        "NSPhotoLibraryAddUsageDescription": "Oroya, yalnızca siz istediğinizde hesap görsellerini galerinize kaydedebilir."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#6C5CE7",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "com.oroya.app",
+      "permissions": [
+        "CAMERA",
+        "READ_MEDIA_IMAGES",
+        "READ_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    }
+  }
+}

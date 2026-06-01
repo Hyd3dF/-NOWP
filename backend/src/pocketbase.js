@@ -1,0 +1,1150 @@
+const crypto = require('node:crypto');
+const { config } = require('./config');
+const { HttpError } = require('./http');
+
+const LEVEL_ONE_LIMITS = {
+  account_level: 1,
+  verification_status: 'unverified',
+  daily_send_limit: 100,
+  daily_receive_limit: 100,
+  daily_send_count: 0,
+  daily_receive_count: 0,
+};
+
+class PocketBaseClient {
+  constructor() {
+    this.baseUrl = config.pocketBase.url;
+    this.superuserToken = null;
+  }
+
+  async request(path, options = {}) {
+    const headers = {
+      Accept: 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+    };
+
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: options.method || 'GET',
+      headers,
+      body: options.body ? JSON.stringify(options.body) : options.rawBody,
+    });
+
+    const text = await response.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+
+    if (!response.ok) {
+      const message = data?.message || `PocketBase request failed with ${response.status}`;
+      throw new HttpError(response.status, message, data?.data || data);
+    }
+
+    return data;
+  }
+
+  async getSuperuserToken() {
+    if (this.superuserToken) return this.superuserToken;
+
+    const auth = await this.request('/api/collections/_superusers/auth-with-password', {
+      method: 'POST',
+      body: {
+        identity: config.pocketBase.superuserEmail,
+        password: config.pocketBase.superuserPassword,
+      },
+    });
+
+    this.superuserToken = auth.token;
+    return this.superuserToken;
+  }
+
+  async adminRequest(path, options = {}) {
+    const token = await this.getSuperuserToken();
+
+    try {
+      return await this.request(path, { ...options, token });
+    } catch (error) {
+      if (error.status === 401 || error.status === 403) {
+        this.superuserToken = null;
+        return this.request(path, {
+          ...options,
+          token: await this.getSuperuserToken(),
+        });
+      }
+      throw error;
+    }
+  }
+
+  async testConnection() {
+    const health = await this.request('/api/health');
+    const collections = await this.adminRequest('/api/collections?perPage=1');
+
+    return {
+      healthy: health?.code === 200,
+      collectionsReachable: Array.isArray(collections?.items),
+    };
+  }
+
+  async findUserByEmail(email) {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!normalizedEmail) return null;
+
+    const filter = encodeURIComponent(`email = "${escapeFilterValue(normalizedEmail)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/users/records?filter=${filter}&perPage=1`,
+    );
+    return result.items?.[0] || null;
+  }
+
+  async findUserByUsername(username) {
+    const cleanUsername = String(username || '').trim();
+    if (!cleanUsername) return null;
+
+    const filter = encodeURIComponent(`username = "${escapeFilterValue(cleanUsername)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/users/records?filter=${filter}&perPage=1`,
+    );
+    return result.items?.[0] || null;
+  }
+
+  async authenticateUserSmart(identity, password) {
+    const cleanIdentity = String(identity || '').trim();
+    const attempts = Array.from(new Set([
+      cleanIdentity,
+      cleanIdentity.toLowerCase(),
+    ].filter(Boolean)));
+
+    if (cleanIdentity.includes('@')) {
+      const user = await this.findUserByEmail(cleanIdentity);
+      if (user?.email) attempts.push(user.email);
+    } else {
+      const user = await this.findUserByUsername(cleanIdentity);
+      if (user?.email) attempts.push(user.email);
+      if (user?.username) attempts.push(user.username);
+    }
+
+    let lastError;
+    for (const attempt of Array.from(new Set(attempts))) {
+      try {
+        return await this.authenticateUser(attempt, password);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError || new HttpError(401, 'Invalid credentials.');
+  }
+
+  async assertEmailAvailable(email) {
+    const existing = await this.findUserByEmail(email);
+    if (existing) {
+      throw new HttpError(409, 'Email already exists. Please log in.', {
+        code: 'email_already_exists',
+      });
+    }
+  }
+
+  async assertUsernameAvailable(username) {
+    if (!username) return;
+    const existing = await this.findUserByUsername(username);
+    if (existing) {
+      throw new HttpError(409, 'Username already exists.', {
+        code: 'username_already_exists',
+      });
+    }
+  }
+
+  async getDeviceSecurity(deviceId) {
+    const filter = encodeURIComponent(`device_id = "${escapeFilterValue(deviceId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/device_security/records?filter=${filter}&perPage=1`,
+    );
+    return result.items?.[0] || null;
+  }
+
+  async ensureDeviceSecurity(context, userId = '') {
+    const now = new Date().toISOString();
+    const deviceId = getStableDeviceId(context);
+    const periodKey = getMonthKey(new Date());
+    const existing = await this.getDeviceSecurity(deviceId);
+
+    if (!existing) {
+      return this.adminRequest('/api/collections/device_security/records', {
+        method: 'POST',
+        body: {
+          device_id: deviceId,
+          device_platform: context.devicePlatform || '',
+          device_info: context.deviceInfo || '',
+          week_key: periodKey,
+          account_create_count_week: 0,
+          login_count_week: 0,
+          login_user_ids: [],
+          last_user_id: userId || '',
+          last_ip_address: context.ipAddress || '',
+          first_seen_at: now,
+          last_seen_at: now,
+          created_at: now,
+          updated_at: now,
+        },
+      });
+    }
+
+    const resetPeriodCounters = existing.week_key !== periodKey;
+    const patch = {
+      device_platform: context.devicePlatform || existing.device_platform || '',
+      device_info: context.deviceInfo || existing.device_info || '',
+      week_key: periodKey,
+      account_create_count_week: resetPeriodCounters
+        ? 0
+        : Number(existing.account_create_count_week || 0),
+      login_count_week: resetPeriodCounters ? 0 : Number(existing.login_count_week || 0),
+      login_user_ids: resetPeriodCounters ? [] : normalizeIdList(existing.login_user_ids),
+      last_user_id: userId || existing.last_user_id || '',
+      last_ip_address: context.ipAddress || existing.last_ip_address || '',
+      last_seen_at: now,
+      updated_at: now,
+    };
+
+    return this.adminRequest(`/api/collections/device_security/records/${encodeURIComponent(existing.id)}`, {
+      method: 'PATCH',
+      body: patch,
+    });
+  }
+
+  async assertDeviceCanRegister(context) {
+    const device = await this.ensureDeviceSecurity(context);
+    if (Number(device.account_create_count_week || 0) >= config.deviceSecurity.monthlyRegisterLimit) {
+      throw new HttpError(429, 'This device reached the monthly account creation limit.', {
+        code: 'monthly_device_register_limit',
+      });
+    }
+    return device;
+  }
+
+  async assertDeviceCanLogin(context, userId = '') {
+    const device = await this.ensureDeviceSecurity(context);
+    const loginUserIds = normalizeIdList(device.login_user_ids);
+    const isKnownAccount = userId && loginUserIds.includes(userId);
+    if (
+      userId &&
+      !isKnownAccount &&
+      loginUserIds.length >= config.deviceSecurity.monthlyLoginAccountLimit
+    ) {
+      throw new HttpError(429, 'This device reached the monthly account login limit.', {
+        code: 'monthly_device_login_account_limit',
+      });
+    }
+    return device;
+  }
+
+  async recordDeviceUsage(context, { userId, accountCreated = false, loggedIn = false }) {
+    const device = await this.ensureDeviceSecurity(context, userId);
+    const loginUserIds = normalizeIdList(device.login_user_ids);
+    if (loggedIn && userId && !loginUserIds.includes(userId)) {
+      loginUserIds.push(userId);
+    }
+
+    return this.adminRequest(`/api/collections/device_security/records/${encodeURIComponent(device.id)}`, {
+      method: 'PATCH',
+      body: {
+        account_create_count_week:
+          Number(device.account_create_count_week || 0) + (accountCreated ? 1 : 0),
+        login_count_week: Number(device.login_count_week || 0) + (loggedIn ? 1 : 0),
+        login_user_ids: loginUserIds,
+        last_user_id: userId || device.last_user_id || '',
+        last_ip_address: context.ipAddress || device.last_ip_address || '',
+        last_seen_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    });
+  }
+
+  async createUser(input) {
+    const now = new Date().toISOString();
+    const body = {
+      email: input.email,
+      password: input.password,
+      passwordConfirm: input.passwordConfirm || input.password,
+      first_name: input.first_name || '',
+      last_name: input.last_name || '',
+      username: input.username || '',
+      phone: input.phone || '',
+      pin_hash: input.pin ? hashSecret(input.pin) : '',
+      date_of_birth: input.date_of_birth || '',
+      profile_photo_url: input.profile_photo_url || '',
+      ...LEVEL_ONE_LIMITS,
+      created_at: now,
+      updated_at: now,
+    };
+
+    if (!input.profile_photo_base64) {
+      return this.adminRequest('/api/collections/users/records', {
+        method: 'POST',
+        body,
+      });
+    }
+
+    const formData = new FormData();
+    for (const [key, value] of Object.entries(body)) {
+      formData.append(key, String(value));
+    }
+
+    const mimeType = input.profile_photo_mime || 'image/jpeg';
+    const fileName = sanitizeFileName(input.profile_photo_name || 'profile-photo.jpg');
+    const fileBuffer = Buffer.from(input.profile_photo_base64, 'base64');
+    formData.append('profile_photo_file', new Blob([fileBuffer], { type: mimeType }), fileName);
+
+    const token = await this.getSuperuserToken();
+    const response = await fetch(`${this.baseUrl}/api/collections/users/records`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    });
+
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!response.ok) {
+      throw new HttpError(response.status, data?.message || 'Failed to create user.', data?.data || data);
+    }
+    return data;
+  }
+
+  async updateUser(userId, patch) {
+    return this.adminRequest(`/api/collections/users/records/${encodeURIComponent(userId)}`, {
+      method: 'PATCH',
+      body: {
+        ...patch,
+        updated_at: new Date().toISOString(),
+      },
+    });
+  }
+
+  async authenticateUser(identity, password) {
+    return this.request('/api/collections/users/auth-with-password', {
+      method: 'POST',
+      body: { identity, password },
+    });
+  }
+
+  verifyUserPin(user, pin) {
+    if (!user?.pin_hash) {
+      throw new HttpError(403, 'Security PIN is not configured.', {
+        code: 'pin_not_configured',
+      });
+    }
+
+    if (!/^\d{4}$/.test(String(pin || '')) || !verifySecret(pin, user.pin_hash)) {
+      throw new HttpError(401, 'Invalid security PIN.', {
+        code: 'invalid_pin',
+      });
+    }
+  }
+
+  async authenticateBearer(token) {
+    if (!token) {
+      throw new HttpError(401, 'Authorization token is required.');
+    }
+
+    const auth = await this.request('/api/collections/users/auth-refresh', {
+      method: 'POST',
+      token,
+    });
+
+    return auth.record;
+  }
+
+  async createWallet(userId, currency = config.defaultWalletCurrency) {
+    const now = new Date().toISOString();
+    return this.adminRequest('/api/collections/wallets/records', {
+      method: 'POST',
+      body: {
+        user_id: userId,
+        currency,
+        balance: 0,
+        locked_balance: 0,
+        total_deposited: 0,
+        total_withdrawn: 0,
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  async getWallets(userId) {
+    const filter = encodeURIComponent(`user_id = "${userId}"`);
+    const result = await this.adminRequest(
+      `/api/collections/wallets/records?filter=${filter}&sort=currency&perPage=50`,
+    );
+    return result.items || [];
+  }
+
+  async ensureDefaultWallet(userId) {
+    const wallets = await this.getWallets(userId);
+    const existing = wallets.find((wallet) => wallet.currency === config.defaultWalletCurrency);
+    if (existing) return existing;
+    return this.createWallet(userId);
+  }
+
+  async getPaymentProfile(userId) {
+    const filter = encodeURIComponent(`user_id = "${escapeFilterValue(userId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/payment_profiles/records?filter=${filter}&perPage=1`,
+    );
+
+    return result.items?.[0] || null;
+  }
+
+  async ensurePaymentProfile(user) {
+    const existing = await this.getPaymentProfile(user.id);
+    if (existing) return existing;
+
+    const now = new Date().toISOString();
+    const paymentTag = await this.generateUniquePaymentTag(user);
+    const displayName = getDisplayName(user);
+    const qrPayload = JSON.stringify({
+      type: 'oroya-payment-profile',
+      version: 1,
+      payment_tag: paymentTag,
+      display_name: displayName,
+    });
+
+    return this.adminRequest('/api/collections/payment_profiles/records', {
+      method: 'POST',
+      body: {
+        user_id: user.id,
+        payment_tag: paymentTag,
+        display_name: displayName,
+        qr_payload: qrPayload,
+        is_active: true,
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  async generateUniquePaymentTag(user) {
+    const base = sanitizePaymentTag(user.username || getDisplayName(user) || user.id);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const suffix = crypto.randomBytes(2).toString('hex');
+      const candidate = `${base}${suffix}`.slice(0, 24);
+      const filter = encodeURIComponent(`payment_tag = "${escapeFilterValue(candidate)}"`);
+      const result = await this.adminRequest(
+        `/api/collections/payment_profiles/records?filter=${filter}&perPage=1`,
+      );
+      if (!result.items?.length) return candidate;
+    }
+
+    return `oroya${crypto.randomBytes(8).toString('hex')}`;
+  }
+
+  async ensureWallet(userId, currency) {
+    const normalizedCurrency = normalizeCurrency(currency);
+    const wallets = await this.getWallets(userId);
+    const existing = wallets.find(
+      (wallet) => normalizeCurrency(wallet.currency) === normalizedCurrency,
+    );
+    if (existing) return existing;
+    return this.createWallet(userId, normalizedCurrency);
+  }
+
+  async updateWalletBalance(wallet, amountDelta) {
+    const currentBalance = Number(wallet.balance || 0);
+    const currentDeposited = Number(wallet.total_deposited || 0);
+
+    return this.adminRequest(`/api/collections/wallets/records/${encodeURIComponent(wallet.id)}`, {
+      method: 'PATCH',
+      body: {
+        balance: currentBalance + amountDelta,
+        total_deposited: currentDeposited + amountDelta,
+        updated_at: new Date().toISOString(),
+      },
+    });
+  }
+
+  async updateWalletForInternalTransfer(wallet, amountDelta) {
+    const currentBalance = Number(wallet.balance || 0);
+    const nextBalance = currentBalance + amountDelta;
+
+    if (!Number.isFinite(nextBalance) || nextBalance < 0) {
+      throw new HttpError(409, 'Insufficient wallet balance.', {
+        code: 'insufficient_balance',
+      });
+    }
+
+    return this.adminRequest(`/api/collections/wallets/records/${encodeURIComponent(wallet.id)}`, {
+      method: 'PATCH',
+      body: {
+        balance: nextBalance,
+        updated_at: new Date().toISOString(),
+      },
+    });
+  }
+
+  async getDailyTransferStats(userId, direction) {
+    const start = new Date();
+    start.setUTCHours(0, 0, 0, 0);
+    const userField = direction === 'receive' ? 'receiver_user_id' : 'sender_user_id';
+    const filter = encodeURIComponent(
+      `${userField} = "${escapeFilterValue(userId)}" && type = "send" && status = "completed" && created_at >= "${start.toISOString()}"`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/transactions/records?filter=${filter}&perPage=200`,
+    );
+    const items = result.items || [];
+
+    return {
+      count: items.length,
+      amount: items.reduce((total, transaction) => total + Number(transaction.amount || 0), 0),
+    };
+  }
+
+  async createInternalTransferTransaction(input) {
+    const now = new Date().toISOString();
+
+    return this.adminRequest('/api/collections/transactions/records', {
+      method: 'POST',
+      body: {
+        user_id: input.senderUserId,
+        type: 'send',
+        amount: input.amount,
+        currency: input.currency,
+        status: 'completed',
+        provider: 'oroya',
+        sender_user_id: input.senderUserId,
+        receiver_user_id: input.receiverUserId,
+        reference_id: input.referenceId,
+        note: input.note || '',
+        created_at: now,
+        completed_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  async createAuditLog({ userId, action, ipAddress, deviceInfo, metadata }) {
+    const safeMetadata = sanitizeMetadata(metadata || {});
+
+    return this.adminRequest('/api/collections/audit_logs/records', {
+      method: 'POST',
+      body: {
+        user_id: userId || '',
+        action,
+        ip_address: String(ipAddress || '').slice(0, 80),
+        device_info: sanitizeLogString(deviceInfo || '', 300),
+        metadata: safeMetadata,
+        created_at: new Date().toISOString(),
+      },
+    });
+  }
+
+  async createPaymentIntent(input) {
+    const now = new Date().toISOString();
+
+    return this.adminRequest('/api/collections/payment_intents/records', {
+      method: 'POST',
+      body: {
+        user_id: input.userId,
+        amount: input.amount,
+        currency: input.currency,
+        network: input.network,
+        reference_id: input.referenceId,
+        nowpayments_payment_id: input.nowPaymentsPaymentId,
+        payment_address: input.paymentAddress || '',
+        payment_url: input.paymentUrl || '',
+        status: input.status,
+        expires_at: input.expiresAt || '',
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  async findPaymentIntent({ paymentId, referenceId }) {
+    const filters = [];
+    if (paymentId) filters.push(`nowpayments_payment_id = "${escapeFilterValue(paymentId)}"`);
+    if (referenceId) filters.push(`reference_id = "${escapeFilterValue(referenceId)}"`);
+
+    if (!filters.length) {
+      throw new HttpError(400, 'payment_id or reference_id is required.');
+    }
+
+    const filter = encodeURIComponent(filters.join(' || '));
+    const result = await this.adminRequest(
+      `/api/collections/payment_intents/records?filter=${filter}&perPage=1`,
+    );
+
+    return result.items?.[0] || null;
+  }
+
+  async updatePaymentIntent(intentId, patch) {
+    return this.adminRequest(
+      `/api/collections/payment_intents/records/${encodeURIComponent(intentId)}`,
+      {
+        method: 'PATCH',
+        body: {
+          ...patch,
+          updated_at: new Date().toISOString(),
+        },
+      },
+    );
+  }
+
+  async findTransactionByReference(referenceId) {
+    const filter = encodeURIComponent(`reference_id = "${escapeFilterValue(referenceId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/transactions/records?filter=${filter}&perPage=1`,
+    );
+
+    return result.items?.[0] || null;
+  }
+
+  async createDepositTransaction(input) {
+    const now = new Date().toISOString();
+
+    return this.adminRequest('/api/collections/transactions/records', {
+      method: 'POST',
+      body: {
+        user_id: input.userId,
+        type: 'deposit',
+        amount: input.amount,
+        currency: input.currency,
+        status: input.status || 'pending',
+        provider: 'nowpayments',
+        provider_payment_id: input.providerPaymentId,
+        wallet_address: input.walletAddress || '',
+        network: input.network || '',
+        reference_id: input.referenceId,
+        note: input.note || '',
+        created_at: now,
+        completed_at: input.completedAt || '',
+        updated_at: now,
+      },
+    });
+  }
+
+  async getTransactionsForUser(userId) {
+    const filter = encodeURIComponent(
+      `user_id = "${escapeFilterValue(userId)}" || sender_user_id = "${escapeFilterValue(userId)}" || receiver_user_id = "${escapeFilterValue(userId)}"`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/transactions/records?filter=${filter}&sort=-created_at&perPage=100`,
+    );
+
+    const mapped = [];
+    for (const transaction of result.items || []) {
+      const isReceiver = transaction.type === 'send' && transaction.receiver_user_id === userId;
+      const sender = transaction.sender_user_id ? await this.getUserById(transaction.sender_user_id) : null;
+      const receiver = transaction.receiver_user_id ? await this.getUserById(transaction.receiver_user_id) : null;
+
+      mapped.push({
+        id: transaction.id,
+        user_id: transaction.user_id || '',
+        sender_id: transaction.sender_user_id || '',
+        receiver_id: transaction.receiver_user_id || '',
+        sender_name: sender ? getDisplayName(sender) : '',
+        receiver_name: receiver ? getDisplayName(receiver) : '',
+        sender_avatar: sender?.profile_photo_url || '',
+        receiver_avatar: receiver?.profile_photo_url || '',
+        amount: Number(transaction.amount || 0),
+        currency: transaction.currency || config.defaultWalletCurrency,
+        type: isReceiver ? 'receive' : transaction.type || 'deposit',
+        status: transaction.status || 'pending',
+        provider: transaction.provider || '',
+        provider_payment_id: transaction.provider_payment_id || '',
+        provider_payout_id: transaction.provider_payout_id || '',
+        wallet_address: transaction.wallet_address || '',
+        network: transaction.network || '',
+        note: transaction.note || '',
+        reference_id: transaction.reference_id || transaction.id,
+        created_at: transaction.created_at || transaction.created || '',
+        completed_at: transaction.completed_at || '',
+        updated_at: transaction.updated_at || transaction.updated || '',
+      });
+    }
+
+    return mapped;
+  }
+
+  async getUserById(userId) {
+    try {
+      return await this.adminRequest(`/api/collections/users/records/${encodeURIComponent(userId)}`);
+    } catch (error) {
+      if (error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async findPaymentProfileByTag(paymentTag) {
+    const filter = encodeURIComponent(
+      `payment_tag = "${escapeFilterValue(sanitizePaymentTag(paymentTag))}" && is_active = true`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/payment_profiles/records?filter=${filter}&perPage=1`,
+    );
+
+    return result.items?.[0] || null;
+  }
+
+  async searchUsersForFriend(query, currentUserId) {
+    const cleanQuery = String(query || '').trim();
+    if (cleanQuery.length < 3) return [];
+
+    const normalizedTag = sanitizePaymentTag(cleanQuery.replace(/^#|@/g, ''));
+    const filters = [
+      `username ~ "${escapeFilterValue(cleanQuery.replace(/^@/, ''))}"`,
+      `email ~ "${escapeFilterValue(cleanQuery)}"`,
+    ];
+
+    if (normalizedTag.length >= 3) {
+      const profile = await this.findPaymentProfileByTag(normalizedTag);
+      if (profile?.user_id && profile.user_id !== currentUserId) {
+        const user = await this.getUserById(profile.user_id);
+        return user ? [await this.toFriendUser(user)] : [];
+      }
+    }
+
+    const filter = encodeURIComponent(`(${filters.join(' || ')}) && id != "${escapeFilterValue(currentUserId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/users/records?filter=${filter}&perPage=20&sort=username`,
+    );
+
+    const users = result.items || [];
+    return Promise.all(users.map((user) => this.toFriendUser(user)));
+  }
+
+  async toFriendUser(user) {
+    const profile = await this.ensurePaymentProfile(user);
+    return {
+      id: user.id,
+      displayName: getDisplayName(user),
+      username: user.username || '',
+      phone: user.phone || '',
+      avatarUrl: user.profile_photo_url || '',
+      oroyaId: profile.payment_tag,
+    };
+  }
+
+  async listFriendRequests(userId) {
+    const filter = encodeURIComponent(
+      `requester_user_id = "${escapeFilterValue(userId)}" || receiver_user_id = "${escapeFilterValue(userId)}"`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/friend_requests/records?filter=${filter}&sort=-created_at&perPage=100`,
+    );
+
+    const requests = [];
+    for (const request of result.items || []) {
+      const otherUserId = request.requester_user_id === userId
+        ? request.receiver_user_id
+        : request.requester_user_id;
+      const otherUser = await this.getUserById(otherUserId);
+      requests.push({
+        id: request.id,
+        requesterUserId: request.requester_user_id,
+        receiverUserId: request.receiver_user_id,
+        direction: request.requester_user_id === userId ? 'outgoing' : 'incoming',
+        status: request.status,
+        createdAt: request.created_at || request.created,
+        respondedAt: request.responded_at || '',
+        user: otherUser ? await this.toFriendUser(otherUser) : null,
+      });
+    }
+
+    return requests.filter((request) => request.user);
+  }
+
+  async findFriendship(userId, friendUserId) {
+    const [userAId, userBId] = sortUserPair(userId, friendUserId);
+    const filter = encodeURIComponent(
+      `user_a_id = "${escapeFilterValue(userAId)}" && user_b_id = "${escapeFilterValue(userBId)}"`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/friendships/records?filter=${filter}&perPage=1`,
+    );
+
+    return result.items?.[0] || null;
+  }
+
+  async findPendingFriendRequest(userId, friendUserId) {
+    const filter = encodeURIComponent(
+      `status = "pending" && ((requester_user_id = "${escapeFilterValue(userId)}" && receiver_user_id = "${escapeFilterValue(friendUserId)}") || (requester_user_id = "${escapeFilterValue(friendUserId)}" && receiver_user_id = "${escapeFilterValue(userId)}"))`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/friend_requests/records?filter=${filter}&perPage=1`,
+    );
+
+    return result.items?.[0] || null;
+  }
+
+  async createFriendRequest({ requesterUserId, receiverUserId, message }) {
+    if (requesterUserId === receiverUserId) {
+      throw new HttpError(400, 'You cannot add yourself as a friend.');
+    }
+
+    const receiver = await this.getUserById(receiverUserId);
+    if (!receiver) {
+      throw new HttpError(404, 'User not found.');
+    }
+
+    const friendship = await this.findFriendship(requesterUserId, receiverUserId);
+    if (friendship?.status === 'accepted') {
+      throw new HttpError(409, 'This user is already your friend.');
+    }
+
+    const pending = await this.findPendingFriendRequest(requesterUserId, receiverUserId);
+    if (pending) return pending;
+
+    const now = new Date().toISOString();
+    return this.adminRequest('/api/collections/friend_requests/records', {
+      method: 'POST',
+      body: {
+        requester_user_id: requesterUserId,
+        receiver_user_id: receiverUserId,
+        status: 'pending',
+        message: message || '',
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  async acceptFriendRequest(requestId, currentUserId) {
+    const request = await this.adminRequest(
+      `/api/collections/friend_requests/records/${encodeURIComponent(requestId)}`,
+    );
+
+    if (request.receiver_user_id !== currentUserId) {
+      throw new HttpError(403, 'Only the receiver can accept this request.');
+    }
+
+    if (request.status !== 'pending') {
+      throw new HttpError(409, 'This request is no longer pending.');
+    }
+
+    const now = new Date().toISOString();
+    await this.adminRequest(`/api/collections/friend_requests/records/${encodeURIComponent(request.id)}`, {
+      method: 'PATCH',
+      body: {
+        status: 'accepted',
+        responded_at: now,
+        updated_at: now,
+      },
+    });
+
+    const [userAId, userBId] = sortUserPair(request.requester_user_id, request.receiver_user_id);
+    const existing = await this.findFriendship(userAId, userBId);
+    const friendship = existing || await this.adminRequest('/api/collections/friendships/records', {
+      method: 'POST',
+      body: {
+        user_a_id: userAId,
+        user_b_id: userBId,
+        request_id: request.id,
+        status: 'accepted',
+        created_at: now,
+        updated_at: now,
+      },
+    });
+
+    const thread = await this.ensureChatThread(friendship);
+    return { friendship, thread };
+  }
+
+  async listFriends(userId) {
+    const filter = encodeURIComponent(
+      `status = "accepted" && (user_a_id = "${escapeFilterValue(userId)}" || user_b_id = "${escapeFilterValue(userId)}")`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/friendships/records?filter=${filter}&sort=-created_at&perPage=100`,
+    );
+
+    const friends = [];
+    for (const friendship of result.items || []) {
+      const friendUserId = friendship.user_a_id === userId ? friendship.user_b_id : friendship.user_a_id;
+      const friendUser = await this.getUserById(friendUserId);
+      if (!friendUser) continue;
+      const thread = await this.ensureChatThread(friendship);
+      friends.push({
+        id: friendship.id,
+        userId,
+        friendId: friendUserId,
+        status: friendship.status,
+        createdAt: friendship.created_at || friendship.created,
+        threadId: thread.id,
+        user: await this.toFriendUser(friendUser),
+      });
+    }
+
+    return friends;
+  }
+
+  async ensureChatThread(friendship) {
+    const [userAId, userBId] = sortUserPair(friendship.user_a_id, friendship.user_b_id);
+    const filter = encodeURIComponent(
+      `user_a_id = "${escapeFilterValue(userAId)}" && user_b_id = "${escapeFilterValue(userBId)}"`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/chat_threads/records?filter=${filter}&perPage=1`,
+    );
+    if (result.items?.[0]) return result.items[0];
+
+    const now = new Date().toISOString();
+    return this.adminRequest('/api/collections/chat_threads/records', {
+      method: 'POST',
+      body: {
+        friendship_id: friendship.id,
+        user_a_id: userAId,
+        user_b_id: userBId,
+        last_message: '',
+        last_message_at: '',
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  async getChatThreadForUser(threadId, userId) {
+    const thread = await this.adminRequest(
+      `/api/collections/chat_threads/records/${encodeURIComponent(threadId)}`,
+    );
+    if (thread.user_a_id !== userId && thread.user_b_id !== userId) {
+      throw new HttpError(403, 'You do not have access to this chat.');
+    }
+    return thread;
+  }
+
+  async listChatMessages(threadId, userId) {
+    await this.getChatThreadForUser(threadId, userId);
+    const filter = encodeURIComponent(`thread_id = "${escapeFilterValue(threadId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/chat_messages/records?filter=${filter}&sort=created_at&perPage=100`,
+    );
+
+    return (result.items || []).map((message) => ({
+      id: message.id,
+      threadId: message.thread_id,
+      senderUserId: message.sender_user_id,
+      receiverUserId: message.receiver_user_id,
+      message: message.message,
+      status: message.status,
+      createdAt: message.created_at || message.created,
+      readAt: message.read_at || '',
+    }));
+  }
+
+  async createChatMessage({ threadId, senderUserId, message }) {
+    const thread = await this.getChatThreadForUser(threadId, senderUserId);
+    const receiverUserId = thread.user_a_id === senderUserId ? thread.user_b_id : thread.user_a_id;
+    const cleanMessage = String(message || '').trim();
+    if (!cleanMessage) {
+      throw new HttpError(400, 'Message is required.');
+    }
+    if (cleanMessage.length > 2000) {
+      throw new HttpError(400, 'Message is too long.');
+    }
+
+    const now = new Date().toISOString();
+    const record = await this.adminRequest('/api/collections/chat_messages/records', {
+      method: 'POST',
+      body: {
+        thread_id: thread.id,
+        sender_user_id: senderUserId,
+        receiver_user_id: receiverUserId,
+        message: cleanMessage,
+        status: 'sent',
+        created_at: now,
+        read_at: '',
+      },
+    });
+
+    await this.adminRequest(`/api/collections/chat_threads/records/${encodeURIComponent(thread.id)}`, {
+      method: 'PATCH',
+      body: {
+        last_message: cleanMessage.slice(0, 1000),
+        last_message_at: now,
+        updated_at: now,
+      },
+    });
+
+    return {
+      id: record.id,
+      threadId: record.thread_id,
+      senderUserId: record.sender_user_id,
+      receiverUserId: record.receiver_user_id,
+      message: record.message,
+      status: record.status,
+      createdAt: record.created_at || record.created,
+      readAt: record.read_at || '',
+    };
+  }
+}
+
+function hashSecret(value) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(value), salt, 64).toString('hex');
+  return `scrypt:${salt}:${hash}`;
+}
+
+function verifySecret(value, storedValue) {
+  const parts = String(storedValue || '').split(':');
+  if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
+
+  const [, salt, storedHash] = parts;
+  if (!/^[a-f0-9]+$/i.test(storedHash)) return false;
+
+  const hash = crypto.scryptSync(String(value), salt, 64);
+  const expected = Buffer.from(storedHash, 'hex');
+  return expected.length === hash.length && crypto.timingSafeEqual(expected, hash);
+}
+
+function sanitizeMetadata(metadata) {
+  return redactMetadataValue(metadata, 0);
+}
+
+function redactMetadataValue(value, depth) {
+  if (value === null || value === undefined) return value;
+
+  if (Array.isArray(value)) {
+    if (depth >= 3) return '[truncated]';
+    return value.slice(0, 20).map((item) => redactMetadataValue(item, depth + 1));
+  }
+
+  if (typeof value === 'object') {
+    if (depth >= 3) return '[truncated]';
+    const output = {};
+    for (const [key, nestedValue] of Object.entries(value).slice(0, 50)) {
+      output[key] = isSensitiveKey(key)
+        ? '[redacted]'
+        : redactMetadataValue(nestedValue, depth + 1);
+    }
+    return output;
+  }
+
+  if (typeof value === 'string') return sanitizeLogString(value, 500);
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+
+  return String(value).slice(0, 100);
+}
+
+function isSensitiveKey(key) {
+  const normalized = String(key);
+  if (/_hash$/i.test(normalized) && !/password|passcode|pin|secret|token|credential/i.test(normalized)) {
+    return false;
+  }
+
+  return /password|passcode|pin|secret|token|authorization|api[_-]?key|signature|credential/i
+    .test(normalized);
+}
+
+function sanitizeLogString(value, maxLength) {
+  return String(value)
+    .replace(/[\r\n\t]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function sanitizeUser(record) {
+  if (!record) return null;
+
+  const {
+    pin_hash: _pinHash,
+    tokenKey: _tokenKey,
+    token: _token,
+    password: _password,
+    passwordConfirm: _passwordConfirm,
+    verified: _verified,
+    emailVisibility: _emailVisibility,
+    ...safe
+  } = record;
+
+  return safe;
+}
+
+function normalizeCurrency(currency) {
+  return String(currency || config.defaultWalletCurrency).trim().toUpperCase();
+}
+
+function escapeFilterValue(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function sanitizeFileName(value) {
+  return String(value).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80) || 'profile-photo.jpg';
+}
+
+function sanitizePaymentTag(value) {
+  const clean = String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '')
+    .slice(0, 18);
+  return clean.length >= 3 ? clean : `oro${clean}`;
+}
+
+function getDisplayName(user) {
+  return (
+    [user.first_name, user.last_name].filter(Boolean).join(' ').trim() ||
+    user.name ||
+    user.username ||
+    user.email ||
+    'Oroya User'
+  );
+}
+
+function sortUserPair(userId, friendUserId) {
+  return [String(userId), String(friendUserId)].sort();
+}
+
+function getStableDeviceId(context) {
+  const explicit = String(context?.deviceId || '').trim();
+  if (explicit.length >= 8) {
+    return `explicit_${crypto.createHash('sha256').update(explicit).digest('hex')}`;
+  }
+
+  const fallback = `${context?.ipAddress || ''}|${context?.deviceInfo || ''}`;
+  return `fallback_${crypto.createHash('sha256').update(fallback).digest('hex')}`;
+}
+
+function getWeekKey(date) {
+  const current = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNumber = current.getUTCDay() || 7;
+  current.setUTCDate(current.getUTCDate() + 4 - dayNumber);
+  const yearStart = new Date(Date.UTC(current.getUTCFullYear(), 0, 1));
+  const weekNumber = Math.ceil((((current - yearStart) / 86400000) + 1) / 7);
+  return `${current.getUTCFullYear()}-W${String(weekNumber).padStart(2, '0')}`;
+}
+
+function getMonthKey(date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function normalizeIdList(value) {
+  if (Array.isArray(value)) {
+    return Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean)));
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return normalizeIdList(parsed);
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+const pocketBase = new PocketBaseClient();
+
+module.exports = {
+  LEVEL_ONE_LIMITS,
+  pocketBase,
+  sanitizeUser,
+};
