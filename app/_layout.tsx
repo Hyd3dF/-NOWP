@@ -13,6 +13,7 @@ export default function RootLayout() {
         <Stack.Screen name="send" options={{ presentation: 'modal' }} />
         <Stack.Screen name="receive" options={{ presentation: 'modal' }} />
         <Stack.Screen name="deposit" />
+        <Stack.Screen name="withdrawal" />
         <Stack.Screen name="request" options={{ presentation: 'modal' }} />
         <Stack.Screen name="qr" options={{ presentation: 'modal' }} />
         <Stack.Screen name="chat" />

@@ -42,11 +42,18 @@ interface FABAction {
 
 const FAB_ACTIONS: FABAction[] = [
   {
-    label: 'Send Money',
-    icon: 'arrow-up-circle',
+    label: 'Send to Oroya User',
+    icon: 'person-circle',
     color: colors.light.primary,
     bgColor: '#F0EDFF',
     route: '/send',
+  },
+  {
+    label: 'Send to External Wallet',
+    icon: 'wallet',
+    color: colors.light.error,
+    bgColor: colors.light.errorLight,
+    route: '/withdrawal',
   },
   {
     label: 'Receive Money',
@@ -56,11 +63,11 @@ const FAB_ACTIONS: FABAction[] = [
     route: '/receive',
   },
   {
-    label: 'Request Money',
-    icon: 'notifications',
+    label: 'Deposit Crypto',
+    icon: 'add-circle',
     color: colors.light.warning,
     bgColor: colors.light.warningLight,
-    route: '/send',
+    route: '/deposit',
   },
   {
     label: 'Show QR Code',
@@ -207,7 +214,7 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
       <BottomSheet
         ref={bottomSheetRef}
         index={-1}
-        snapPoints={['45%']}
+        snapPoints={['52%']}
         enablePanDownToClose
         onChange={handleSheetChange}
         backdropComponent={renderBackdrop}
