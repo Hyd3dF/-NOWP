@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Clipboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,9 +9,8 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import QRCode from 'react-native-qrcode-svg';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius, shadows } from '@/theme/spacing';
@@ -29,19 +27,8 @@ import {
   prefetchCurrencyLogos,
 } from '@/services/api/payments';
 import type { PaymentCurrency } from '@/services/api/payments';
-
-interface DepositPayment {
-  id: string;
-  reference_id: string;
-  payment_id: string;
-  payment_address: string;
-  payment_url: string;
-  status: string;
-  amount: number;
-  currency: string;
-  network: string;
-  expires_at?: string;
-}
+import { useDepositStore } from '@/stores/depositStore';
+import type { DepositPayment } from '@/stores/depositStore';
 
 interface DepositResponse {
   success: boolean;
@@ -50,11 +37,10 @@ interface DepositResponse {
 
 export default function DepositScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ selectedCoin?: string }>();
+  const { selectedCoinId, setPayment } = useDepositStore();
 
   const [currencies, setCurrencies] = useState<PaymentCurrency[]>(FALLBACK_CURRENCIES);
   const [amount, setAmount] = useState('');
-  const [payment, setPayment] = useState<DepositPayment | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isCurrenciesLoading, setIsCurrenciesLoading] = useState(false);
   const [error, setError] = useState('');
@@ -81,10 +67,12 @@ export default function DepositScreen() {
     };
   }, []);
 
-  const coinId = String(params.selectedCoin || 'btc').toLowerCase();
   const selectedCoinObj = useMemo(
-    () => currencies.find((currency) => currency.id === coinId) || currencies[0] || FALLBACK_CURRENCIES[0],
-    [coinId, currencies],
+    () =>
+      currencies.find((currency) => currency.id === selectedCoinId) ||
+      currencies[0] ||
+      FALLBACK_CURRENCIES[0],
+    [selectedCoinId, currencies],
   );
 
   const createDeposit = async () => {
@@ -104,18 +92,13 @@ export default function DepositScreen() {
         network: selectedCoinObj.id,
       });
       setPayment(response.payment);
+      router.push('/deposit/result');
     } catch (error) {
       const message = error instanceof ApiError ? getDepositErrorMessage(error.code) : '';
       setError(message || 'Deposit address could not be created right now. Please try again in a moment.');
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const copyAddress = () => {
-    if (!payment?.payment_address) return;
-    Clipboard.setString(payment.payment_address);
-    alert('Deposit address copied.');
   };
 
   return (
@@ -191,55 +174,6 @@ export default function DepositScreen() {
               <ActivityIndicator color={colors.light.primary} />
               <Text style={styles.loadingText}>Creating deposit address...</Text>
             </View>
-          ) : null}
-
-          {payment ? (
-            <Card variant="default" style={styles.resultCard}>
-              <View style={styles.statusRow}>
-                <Text style={styles.resultTitle}>Deposit Address Ready</Text>
-                <View style={styles.statusBadge}>
-                  <Text style={styles.statusText}>{payment.status}</Text>
-                </View>
-              </View>
-
-              <Text style={styles.resultDescription}>
-                Send only {selectedCoinObj.symbol} on {selectedCoinObj.network || selectedCoinObj.symbol} to this address. Sending another asset or network can permanently lose funds.
-              </Text>
-
-              <View style={styles.qrWrapper}>
-                <QRCode
-                  value={payment.payment_address}
-                  size={190}
-                  color={colors.light.primary}
-                  backgroundColor="#FFFFFF"
-                />
-              </View>
-
-              <View style={styles.infoRow}>
-                <Text style={styles.infoLabel}>Payment ID</Text>
-                <Text style={styles.infoValue}>{payment.payment_id}</Text>
-              </View>
-
-              <View style={styles.infoRow}>
-                <Text style={styles.infoLabel}>Network</Text>
-                <Text style={styles.infoValue}>
-                  {selectedCoinObj.name} ({selectedCoinObj.network || selectedCoinObj.symbol})
-                </Text>
-              </View>
-
-              <View style={styles.addressBox}>
-                <Text style={styles.addressLabel}>Payment Address</Text>
-                <Text style={styles.addressText}>{payment.payment_address}</Text>
-              </View>
-
-              <Button
-                title="Copy Address"
-                onPress={copyAddress}
-                fullWidth
-                icon={<Ionicons name="copy-outline" size={18} color="#FFFFFF" />}
-                style={styles.copyBtn}
-              />
-            </Card>
           ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
@@ -354,93 +288,6 @@ const styles = StyleSheet.create({
     color: colors.light.textSecondary,
     marginTop: spacing.sm,
   },
-  resultCard: {
-    padding: spacing.lg,
-    marginTop: spacing.lg,
-    alignItems: 'center',
-  },
-  statusRow: {
-    width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-  },
-  resultTitle: {
-    ...typography.h3,
-    color: colors.light.textPrimary,
-    fontWeight: '700',
-    flex: 1,
-  },
-  statusBadge: {
-    borderRadius: borderRadius.sm,
-    backgroundColor: colors.light.successLight,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  statusText: {
-    ...typography.caption,
-    color: colors.light.success,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-  resultDescription: {
-    ...typography.bodySm,
-    color: colors.light.textSecondary,
-    lineHeight: 20,
-    marginTop: spacing.sm,
-    marginBottom: spacing.lg,
-    width: '100%',
-  },
-  qrWrapper: {
-    padding: spacing.md,
-    backgroundColor: '#FFFFFF',
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: colors.light.borderLight,
-    marginBottom: spacing.lg,
-    ...shadows.card,
-  },
-  infoRow: {
-    width: '100%',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    marginBottom: spacing.sm,
-  },
-  infoLabel: {
-    ...typography.caption,
-    color: colors.light.textSecondary,
-  },
-  infoValue: {
-    ...typography.caption,
-    color: colors.light.textPrimary,
-    fontWeight: '700',
-    flex: 1,
-    textAlign: 'right',
-  },
-  addressBox: {
-    width: '100%',
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.light.background,
-    borderWidth: 1,
-    borderColor: colors.light.border,
-    padding: spacing.md,
-    marginTop: spacing.md,
-  },
-  addressLabel: {
-    ...typography.caption,
-    color: colors.light.textSecondary,
-    marginBottom: spacing.xs,
-  },
-  addressText: {
-    ...typography.bodySm,
-    color: colors.light.textPrimary,
-    fontWeight: '600',
-  },
-  copyBtn: {
-    marginTop: spacing.lg,
-  },
 });
 
 function getDepositErrorMessage(code: string) {
@@ -449,6 +296,12 @@ function getDepositErrorMessage(code: string) {
       return 'Please sign in again before creating a deposit address.';
     case 'validation_failed':
       return 'Check the amount and selected network, then try again.';
+    case 'minimum_deposit_amount':
+      return 'This amount is below the minimum for the selected crypto. Increase the amount and try again.';
+    case 'deposit_currency_unavailable':
+      return 'This crypto/network is not available for deposit right now. Please choose another coin.';
+    case 'deposit_provider_unavailable':
+      return 'The deposit provider is busy right now. Please try again shortly.';
     case 'server_unavailable':
     case 'connection_failed':
       return 'Deposit service is temporarily unavailable. Please try again shortly.';

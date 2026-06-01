@@ -203,6 +203,7 @@ async function createDeposit(req, res) {
       },
     });
   } catch (error) {
+    const providerErrorCode = getCreateDepositErrorCode(error);
     await pocketBase.createAuditLog({
       userId: user.id,
       action: 'payments.create_deposit_failed',
@@ -212,14 +213,32 @@ async function createDeposit(req, res) {
         currency,
         network,
         reference_id: referenceId,
-        reason_code: error.details?.code || 'provider_error',
+        reason_code: error.details?.code || providerErrorCode || 'provider_error',
       },
     });
     if (!error.details?.code) {
-      throw new HttpError(502, 'Payment provider request failed.');
+      if (providerErrorCode === 'deposit_currency_unavailable') {
+        throw new HttpError(400, 'Selected crypto network is not available right now.', {
+          code: providerErrorCode,
+          currency,
+          network,
+        });
+      }
+
+      throw new HttpError(503, 'Deposit provider is temporarily unavailable.', {
+        code: 'deposit_provider_unavailable',
+      });
     }
     throw error;
   }
+}
+
+function getCreateDepositErrorCode(error) {
+  if (error.status >= 400 && error.status < 500) {
+    return 'deposit_currency_unavailable';
+  }
+
+  return 'deposit_provider_unavailable';
 }
 
 async function depositCurrencies(req, res) {

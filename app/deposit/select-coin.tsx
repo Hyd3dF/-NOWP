@@ -21,6 +21,7 @@ import {
   prefetchCurrencyLogos,
 } from '@/services/api/payments';
 import type { PaymentCurrency, PaymentCurrencyCategory } from '@/services/api/payments';
+import { useDepositStore } from '@/stores/depositStore';
 
 const CATEGORIES: PaymentCurrencyCategory[] = [
   'Popular Coins',
@@ -38,6 +39,7 @@ function chunkRows(items: PaymentCurrency[]) {
 
 export default function SelectCoinScreen() {
   const router = useRouter();
+  const { setSelectedCoin, clearPayment } = useDepositStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [currencies, setCurrencies] = useState<PaymentCurrency[]>(FALLBACK_CURRENCIES);
   const [isLoading, setIsLoading] = useState(false);
@@ -90,7 +92,9 @@ export default function SelectCoinScreen() {
   );
 
   const handleSelectCoin = (coin: PaymentCurrency) => {
-    router.replace({ pathname: '/deposit', params: { selectedCoin: coin.id } });
+    setSelectedCoin(coin.id);
+    clearPayment();
+    router.back();
   };
 
   return (
