@@ -77,6 +77,9 @@ const config = {
     monthlyRegisterLimit: numberOrDefault(process.env.DEVICE_MONTHLY_REGISTER_LIMIT, 3),
     monthlyLoginAccountLimit: numberOrDefault(process.env.DEVICE_MONTHLY_LOGIN_ACCOUNT_LIMIT, 5),
   },
+  admin: {
+    notificationToken: optional('OROYA_ADMIN_NOTIFICATION_TOKEN'),
+  },
   pocketBase: {
     url: trimTrailingSlash(required('POCKETBASE_URL')),
     superuserEmail: required('POCKETBASE_SUPERUSER_EMAIL'),

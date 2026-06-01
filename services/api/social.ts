@@ -37,6 +37,7 @@ export interface ChatMessage {
   };
   status: string;
   createdAt: string;
+  deliveredAt?: string;
   readAt?: string;
   senderAvatar?: string | null;
   receiverAvatar?: string | null;

@@ -2,6 +2,7 @@ const http = require('node:http');
 const { config } = require('./config');
 const { HttpError, getSafeErrorResponse, sendJson } = require('./http');
 const { pocketBase } = require('./pocketbase');
+const { createAdminNotification } = require('./routes/adminNotifications');
 const { createMessage, listMessages, openChat } = require('./routes/chats');
 const { login, logout, register } = require('./routes/auth');
 const {
@@ -12,6 +13,7 @@ const {
   searchFriends,
 } = require('./routes/friends');
 const { createDeposit, depositCurrencies, nowPaymentsWebhook } = require('./routes/payments');
+const { listNotifications, markNotificationRead } = require('./routes/notifications');
 const { myTransactions } = require('./routes/transactions');
 const { sendTransfer } = require('./routes/transfers');
 const { me, paymentProfile, updateMe } = require('./routes/users');
@@ -33,6 +35,9 @@ const routes = new Map([
   ['POST /chats/open', openChat],
   ['GET /chats/messages', listMessages],
   ['POST /chats/messages', createMessage],
+  ['GET /notifications', listNotifications],
+  ['POST /notifications/read', markNotificationRead],
+  ['POST /admin/notifications', createAdminNotification],
   ['GET /payments/currencies', depositCurrencies],
   ['POST /payments/create-deposit', createDeposit],
   ['POST /payments/nowpayments-webhook', nowPaymentsWebhook],
@@ -48,7 +53,7 @@ function applyCors(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type,Authorization,X-Oroya-Device-Id,X-Oroya-Client-Platform,X-Oroya-App-Version,X-NOWPayments-Sig',
+    'Content-Type,Authorization,X-Oroya-Device-Id,X-Oroya-Client-Platform,X-Oroya-App-Version,X-NOWPayments-Sig,X-Oroya-Admin-Token',
   );
   res.setHeader('Access-Control-Max-Age', '600');
   res.setHeader('Vary', 'Origin');

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Oroya Admin Notifications</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #f6f7fb; color: #16162a; }
+      main { max-width: 720px; margin: 40px auto; padding: 24px; background: #fff; border: 1px solid #e7e8ef; border-radius: 12px; }
+      label { display: block; margin: 16px 0 6px; font-weight: 700; }
+      input, textarea { width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid #d9dbe7; border-radius: 8px; font: inherit; }
+      textarea { min-height: 120px; resize: vertical; }
+      button { margin-top: 18px; width: 100%; padding: 14px; border: 0; border-radius: 8px; background: #6c5ce7; color: #fff; font-weight: 800; cursor: pointer; }
+      .hint { color: #6b7280; line-height: 1.5; }
+      .status { margin-top: 16px; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Oroya Notification Sender</h1>
+      <p class="hint">Use this only as the app owner. The admin token must come from Render environment variable <strong>OROYA_ADMIN_NOTIFICATION_TOKEN</strong>.</p>
+
+      <label>Backend URL</label>
+      <input id="apiUrl" value="https://oroya.onrender.com" />
+
+      <label>Admin Token</label>
+      <input id="token" type="password" autocomplete="off" />
+
+      <label>Title</label>
+      <input id="title" maxlength="120" />
+
+      <label>Body</label>
+      <textarea id="body" maxlength="1000"></textarea>
+
+      <label>Image URL</label>
+      <input id="imageUrl" placeholder="Optional" />
+
+      <label>Link URL</label>
+      <input id="linkUrl" placeholder="Optional" />
+
+      <button id="send">Send Notification</button>
+      <div id="status" class="status"></div>
+    </main>
+
+    <script>
+      const statusEl = document.getElementById('status');
+      document.getElementById('send').addEventListener('click', async () => {
+        statusEl.textContent = 'Sending...';
+        const apiUrl = document.getElementById('apiUrl').value.replace(/\/+$/, '');
+        const token = document.getElementById('token').value.trim();
+        const title = document.getElementById('title').value.trim();
+        const body = document.getElementById('body').value.trim();
+        const imageUrl = document.getElementById('imageUrl').value.trim();
+        const linkUrl = document.getElementById('linkUrl').value.trim();
+
+        try {
+          const response = await fetch(`${apiUrl}/admin/notifications`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Oroya-Admin-Token': token,
+            },
+            body: JSON.stringify({ title, body, imageUrl, linkUrl, type: 'system' }),
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Notification failed.');
+          statusEl.textContent = 'Notification sent.';
+        } catch (error) {
+          statusEl.textContent = error.message || 'Notification failed.';
+        }
+      });
+    </script>
+  </body>
+</html>

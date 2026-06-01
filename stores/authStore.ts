@@ -7,6 +7,7 @@ import { useFriendStore } from './friendStore';
 import { useSendStore } from './sendStore';
 import { useTransactionStore } from './transactionStore';
 import { useWalletStore } from './walletStore';
+import { useChatStore } from './chatStore';
 
 interface BackendUser {
   id: string;
@@ -134,6 +135,7 @@ function clearClientSessionState() {
   usePaymentProfileStore.getState().clearPaymentProfile();
   useWalletStore.getState().clearWallet();
   useFriendStore.getState().clearFriends();
+  useChatStore.getState().clearChats();
   useTransactionStore.getState().clearTransactions();
   useSendStore.getState().reset();
 }

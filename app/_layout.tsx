@@ -51,6 +51,7 @@ export default function RootLayout() {
           <Stack.Screen name="request" options={{ presentation: 'modal' }} />
           <Stack.Screen name="qr" options={{ presentation: 'modal' }} />
           <Stack.Screen name="chat" />
+          <Stack.Screen name="notifications" />
         </Stack>
       )}
     </GestureHandlerRootView>

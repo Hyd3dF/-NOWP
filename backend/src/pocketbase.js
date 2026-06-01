@@ -986,8 +986,23 @@ class PocketBaseClient {
       `/api/collections/chat_messages/records?filter=${filter}&sort=created_at&perPage=100`,
     );
 
+    const now = new Date().toISOString();
     const messages = [];
     for (const message of result.items || []) {
+      let readAt = message.read_at || '';
+      let status = message.status;
+      if (message.receiver_user_id === userId && !readAt) {
+        readAt = now;
+        status = 'read';
+        await this.adminRequest(`/api/collections/chat_messages/records/${encodeURIComponent(message.id)}`, {
+          method: 'PATCH',
+          body: {
+            status,
+            read_at: readAt,
+          },
+        });
+      }
+
       const sender = await this.getUserById(message.sender_user_id);
       const receiver = await this.getUserById(message.receiver_user_id);
       messages.push({
@@ -998,9 +1013,10 @@ class PocketBaseClient {
         message: message.message,
         messageType: normalizeChatMessageType(message.message_type),
         metadata: normalizeChatMetadata(message.metadata),
-        status: message.status,
+        status,
         createdAt: message.created_at || message.created,
-        readAt: message.read_at || '',
+        deliveredAt: message.delivered_at || '',
+        readAt,
         senderAvatar: sender?.profile_photo_url || '',
         receiverAvatar: receiver?.profile_photo_url || '',
       });
@@ -1038,8 +1054,9 @@ class PocketBaseClient {
         message: cleanMessage,
         message_type: cleanType,
         metadata: cleanMetadata,
-        status: 'sent',
+        status: 'delivered',
         created_at: now,
+        delivered_at: now,
         read_at: '',
       },
     });
@@ -1063,8 +1080,142 @@ class PocketBaseClient {
       metadata: cleanMetadata,
       status: record.status,
       createdAt: record.created_at || record.created,
+      deliveredAt: record.delivered_at || '',
       readAt: record.read_at || '',
     };
+  }
+
+  async listNotifications(userId) {
+    const items = [];
+    const requests = await this.listFriendRequests(userId);
+    for (const request of requests) {
+      if (request.direction === 'incoming' && request.status === 'pending') {
+        items.push({
+          id: `friend_request:${request.id}`,
+          type: 'friend_request',
+          title: 'New friend request',
+          body: `${request.user.displayName} wants to connect with you.`,
+          imageUrl: request.user.avatarUrl || '',
+          icon: 'person-add-outline',
+          linkUrl: '',
+          referenceCollection: 'friend_requests',
+          referenceId: request.id,
+          isRead: false,
+          createdAt: request.createdAt,
+          readAt: '',
+          metadata: {
+            requesterUserId: request.requesterUserId,
+            username: request.user.username,
+            oroyaId: request.user.oroyaId || '',
+          },
+        });
+      }
+
+      if (request.direction === 'outgoing' && request.status === 'accepted') {
+        items.push({
+          id: `friend_accept:${request.id}`,
+          type: 'friend_accept',
+          title: 'Friend request accepted',
+          body: `${request.user.displayName} is now your friend.`,
+          imageUrl: request.user.avatarUrl || '',
+          icon: 'checkmark-circle-outline',
+          linkUrl: '',
+          referenceCollection: 'friend_requests',
+          referenceId: request.id,
+          isRead: true,
+          createdAt: request.respondedAt || request.createdAt,
+          readAt: request.respondedAt || '',
+          metadata: {
+            friendUserId: request.receiverUserId,
+            username: request.user.username,
+            oroyaId: request.user.oroyaId || '',
+          },
+        });
+      }
+    }
+
+    try {
+      const notifications = await this.adminRequest(
+        '/api/collections/notifications/records?filter=' +
+          encodeURIComponent('status = "published" && audience = "all"') +
+          '&sort=-published_at,-created_at&perPage=100',
+      );
+      const reads = await this.getNotificationReads(userId);
+      for (const notification of notifications.items || []) {
+        const read = reads.get(notification.id);
+        items.push({
+          id: notification.id,
+          type: notification.type || 'system',
+          title: notification.title || 'Oroya',
+          body: notification.body || '',
+          imageUrl: notification.image_url || '',
+          icon: notification.icon || 'notifications-outline',
+          linkUrl: notification.link_url || '',
+          referenceCollection: 'notifications',
+          referenceId: notification.id,
+          isRead: Boolean(read),
+          createdAt: notification.published_at || notification.created_at || notification.created || '',
+          readAt: read?.read_at || '',
+          metadata: sanitizeMetadata(notification.metadata || {}),
+        });
+      }
+    } catch (error) {
+      if (error.status !== 404) throw error;
+    }
+
+    return items.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  }
+
+  async getNotificationReads(userId) {
+    const filter = encodeURIComponent(`user_id = "${escapeFilterValue(userId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/notification_reads/records?filter=${filter}&perPage=200`,
+    );
+    return new Map((result.items || []).map((item) => [item.notification_id, item]));
+  }
+
+  async markNotificationRead(userId, notificationId) {
+    if (!notificationId || String(notificationId).includes(':')) return null;
+
+    const filter = encodeURIComponent(
+      `user_id = "${escapeFilterValue(userId)}" && notification_id = "${escapeFilterValue(notificationId)}"`,
+    );
+    const existing = await this.adminRequest(
+      `/api/collections/notification_reads/records?filter=${filter}&perPage=1`,
+    );
+    if (existing.items?.[0]) return existing.items[0];
+
+    const now = new Date().toISOString();
+    return this.adminRequest('/api/collections/notification_reads/records', {
+      method: 'POST',
+      body: {
+        user_id: userId,
+        notification_id: notificationId,
+        read_at: now,
+        created_at: now,
+      },
+    });
+  }
+
+  async createAdminNotification(input) {
+    const now = new Date().toISOString();
+    return this.adminRequest('/api/collections/notifications/records', {
+      method: 'POST',
+      body: {
+        title: sanitizeLogString(input.title, 120),
+        body: sanitizeLogString(input.body, 1000),
+        type: sanitizeLogString(input.type || 'system', 40),
+        image_url: sanitizeLogString(input.imageUrl || '', 500),
+        icon: sanitizeLogString(input.icon || 'notifications-outline', 60),
+        link_url: sanitizeLogString(input.linkUrl || '', 500),
+        audience: 'all',
+        status: 'published',
+        metadata: sanitizeMetadata(input.metadata || {}),
+        published_at: now,
+        created_at: now,
+        updated_at: now,
+      },
+    });
   }
 }
 

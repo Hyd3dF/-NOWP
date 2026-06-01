@@ -5,36 +5,81 @@ import {
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
+  Animated as RNAnimated,
+  LayoutAnimation,
+  UIManager,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius, shadows } from '@/theme/spacing';
-import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Avatar } from '@/components/ui/Avatar';
 import { useAuthStore } from '@/stores/authStore';
+import { useChatStore } from '@/stores/chatStore';
 import { fetchChatMessages, sendChatMessage } from '@/services/api/social';
 import type { ChatMessage } from '@/services/api/social';
 import { formatCurrency, formatTime } from '@/utils/format';
 
+// Enable LayoutAnimation on Android
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
 type LocalChatMessage = ChatMessage & { localStatus?: 'sending' | 'failed' };
 
+let styles: any;
+
 const QUICK_ACTIONS = [
-  { key: 'gift', label: 'Money Gift', icon: 'gift-outline', color: colors.light.primary, bg: '#F0EDFF' },
-  { key: 'photo', label: 'Photo', icon: 'image-outline', color: colors.light.success, bg: colors.light.successLight },
-  { key: 'camera', label: 'Camera', icon: 'camera-outline', color: colors.light.secondary, bg: '#E0FFFE' },
-  { key: 'contact', label: 'Contact', icon: 'person-circle-outline', color: colors.light.warning, bg: colors.light.warningLight },
+  { key: 'gift', label: 'Money', icon: 'gift-outline' as keyof typeof Ionicons.glyphMap, color: '#7C3AED', bg: '#F0EDFF' },
+  { key: 'photo', label: 'Photo', icon: 'image-outline' as keyof typeof Ionicons.glyphMap, color: '#059669', bg: '#D1FAE5' },
+  { key: 'camera', label: 'Camera', icon: 'camera-outline' as keyof typeof Ionicons.glyphMap, color: '#0891B2', bg: '#CFFAFE' },
+  { key: 'contact', label: 'Contact', icon: 'person-outline' as keyof typeof Ionicons.glyphMap, color: '#D97706', bg: '#FEF3C7' },
 ] as const;
+
+// ─── Action Button ───
+function ActionButton({
+  action,
+  onPress,
+}: {
+  action: (typeof QUICK_ACTIONS)[number];
+  onPress: () => void;
+}) {
+  const scale = React.useRef(new RNAnimated.Value(1)).current;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => {
+        RNAnimated.spring(scale, { toValue: 0.93, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
+      }}
+      onPressOut={() => {
+        RNAnimated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 8 }).start();
+      }}
+      style={styles.actionItem}
+    >
+      <RNAnimated.View style={{ transform: [{ scale }] }}>
+        <View style={[styles.actionIconCircle, { backgroundColor: action.bg }]}>
+          <Ionicons name={action.icon} size={24} color={action.color} />
+        </View>
+      </RNAnimated.View>
+      <Text style={styles.actionLabel}>{action.label}</Text>
+    </Pressable>
+  );
+}
 
 export default function ChatScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const listRef = useRef<FlatList<LocalChatMessage>>(null);
   const { id, name, username, avatarUrl } = useLocalSearchParams<{
     id: string;
@@ -44,6 +89,8 @@ export default function ChatScreen() {
     avatarUrl?: string;
   }>();
   const user = useAuthStore((state) => state.user);
+  const getCachedMessages = useChatStore((state) => state.getMessages);
+  const setCachedMessages = useChatStore((state) => state.setMessages);
   const currentUserId = user?.id;
   const [messages, setMessages] = useState<LocalChatMessage[]>([]);
   const [draft, setDraft] = useState('');
@@ -51,11 +98,25 @@ export default function ChatScreen() {
   const [isSending, setIsSending] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [isActionPanelOpen, setIsActionPanelOpen] = useState(false);
+  const [isGiftModalVisible, setIsGiftModalVisible] = useState(false);
+  const [giftAmount, setGiftAmount] = useState('');
+  const [giftNote, setGiftNote] = useState('');
 
   const threadId = String(id || '');
   const displayName = String(name || 'Friend');
   const displayUsername = String(username || '');
   const friendAvatar = String(avatarUrl || '');
+
+  const applyMessages = React.useCallback(
+    (updater: (items: LocalChatMessage[]) => LocalChatMessage[]) => {
+      setMessages((current) => {
+        const next = updater(current);
+        if (threadId) setCachedMessages(threadId, next);
+        return next;
+      });
+    },
+    [setCachedMessages, threadId],
+  );
 
   const loadMessages = React.useCallback(() => {
     if (!threadId) {
@@ -65,12 +126,22 @@ export default function ChatScreen() {
       return;
     }
 
+    const cached = getCachedMessages(threadId);
+    if (cached.length > 0) {
+      setMessages(cached);
+      setIsLoading(false);
+    } else {
+      setIsLoading(true);
+    }
+
     let isMounted = true;
-    setIsLoading(true);
     setLoadError('');
     fetchChatMessages(threadId)
       .then((items) => {
-        if (isMounted) setMessages(items);
+        if (isMounted) {
+          setMessages(items);
+          setCachedMessages(threadId, items);
+        }
       })
       .catch(() => {
         if (isMounted) {
@@ -85,7 +156,7 @@ export default function ChatScreen() {
     return () => {
       isMounted = false;
     };
-  }, [threadId]);
+  }, [getCachedMessages, setCachedMessages, threadId]);
 
   useEffect(() => {
     return loadMessages();
@@ -118,14 +189,14 @@ export default function ChatScreen() {
 
     setDraft('');
     setIsActionPanelOpen(false);
-    setMessages((items) => [...items, optimisticMessage]);
+    applyMessages((items) => [...items, optimisticMessage]);
     setIsSending(true);
     try {
       const message = await sendChatMessage(threadId, cleanDraft);
-      setMessages((items) => items.map((item) => (item.id === tempId ? message : item)));
+      applyMessages((items) => items.map((item) => (item.id === tempId ? message : item)));
     } catch {
       setDraft(cleanDraft);
-      setMessages((items) =>
+      applyMessages((items) =>
         items.map((item) =>
           item.id === tempId ? { ...item, status: 'failed', localStatus: 'failed' } : item,
         ),
@@ -143,21 +214,28 @@ export default function ChatScreen() {
       return;
     }
 
-    await sendDemoGift();
+    setIsActionPanelOpen(false);
+    setIsGiftModalVisible(true);
   };
 
   const sendDemoGift = async () => {
     if (!threadId || isSending) return;
 
-    const amount = 10;
+    const amount = Number(giftAmount);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 1000) {
+      Alert.alert('Gift amount', 'Enter an amount between 1 and 1000 USD.');
+      return;
+    }
+
     const currency = 'USD';
     const tempId = `gift-${Date.now()}`;
+    const messageText = giftNote.trim() || 'A small Oroya gift for you';
     const optimisticMessage: LocalChatMessage = {
       id: tempId,
       threadId,
       senderUserId: currentUserId || '',
       receiverUserId: '',
-      message: 'A small Oroya gift for you',
+      message: messageText,
       messageType: 'money_gift',
       metadata: {
         amount,
@@ -173,16 +251,19 @@ export default function ChatScreen() {
     };
 
     setIsActionPanelOpen(false);
-    setMessages((items) => [...items, optimisticMessage]);
+    setIsGiftModalVisible(false);
+    setGiftAmount('');
+    setGiftNote('');
+    applyMessages((items) => [...items, optimisticMessage]);
     setIsSending(true);
     try {
       const message = await sendChatMessage(threadId, optimisticMessage.message, {
         messageType: 'money_gift',
         metadata: optimisticMessage.metadata,
       });
-      setMessages((items) => items.map((item) => (item.id === tempId ? message : item)));
+      applyMessages((items) => items.map((item) => (item.id === tempId ? message : item)));
     } catch {
-      setMessages((items) =>
+      applyMessages((items) =>
         items.map((item) =>
           item.id === tempId ? { ...item, status: 'failed', localStatus: 'failed' } : item,
         ),
@@ -195,41 +276,63 @@ export default function ChatScreen() {
 
   const toggleActionPanel = () => {
     Keyboard.dismiss();
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setIsActionPanelOpen((value) => !value);
   };
 
+  const firstName = displayName.split(' ')[0];
+
   return (
     <View style={styles.container}>
-      <HeaderBar
-        title={displayName}
-        showBack
-        onBack={() => router.back()}
-        rightAction={
-          <View style={styles.headerAvatar}>
-            <Avatar name={displayName} uri={friendAvatar} size={38} />
+      {/* ─── Custom Chat Header ─── */}
+      <View style={[styles.chatHeader, { paddingTop: insets.top + 8 }]}>
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={8}
+          style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.6 }]}
+        >
+          <Ionicons name="chevron-back" size={24} color={colors.light.textPrimary} />
+        </Pressable>
+
+        <Pressable style={styles.headerCenter} onPress={() => {}}>
+          <View style={styles.headerAvatarWrap}>
+            <Avatar name={displayName} uri={friendAvatar} size={36} />
+            <View style={styles.headerOnlineDot} />
           </View>
-        }
-      />
+          <View style={styles.headerTextWrap}>
+            <Text style={styles.headerName} numberOfLines={1}>{firstName}</Text>
+            <View style={styles.headerStatusRow}>
+              <View style={styles.headerSecureIcon}>
+                <Ionicons name="lock-closed" size={9} color={colors.light.success} />
+              </View>
+              <Text style={styles.headerStatusText}>
+                {displayUsername ? `@${displayUsername}` : 'Encrypted'}
+              </Text>
+            </View>
+          </View>
+        </Pressable>
+
+        <View style={{ width: 36 }} />
+      </View>
 
       <KeyboardAvoidingView
         style={styles.keyboardView}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.presenceRow}>
-          {displayUsername ? <Text style={styles.username}>@{displayUsername}</Text> : null}
-          <View style={styles.onlineDot} />
-          <Text style={styles.presenceText}>Secure chat</Text>
-        </View>
-
         {isLoading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator color={colors.light.primary} />
           </View>
         ) : loadError ? (
           <View style={styles.emptyContainer}>
-            <Ionicons name="chatbubble-ellipses-outline" size={36} color={colors.light.textTertiary} />
-            <Text style={styles.emptyText}>{loadError}</Text>
-            <Pressable style={styles.retryButton} onPress={() => loadMessages()}>
+            <View style={styles.emptyIconWrap}>
+              <Ionicons name="chatbubble-ellipses-outline" size={32} color={colors.light.textTertiary} />
+            </View>
+            <Text style={styles.emptyTitle}>{loadError}</Text>
+            <Pressable
+              style={({ pressed }) => [styles.retryButton, pressed && { opacity: 0.7 }]}
+              onPress={() => loadMessages()}
+            >
               <Text style={styles.retryText}>Try again</Text>
             </Pressable>
           </View>
@@ -240,6 +343,7 @@ export default function ChatScreen() {
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.messagesContent}
             keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
             renderItem={({ item, index }) => {
               const isMine = item.senderUserId === currentUserId;
               const previous = messages[index - 1];
@@ -256,55 +360,72 @@ export default function ChatScreen() {
             }}
             ListEmptyComponent={
               <View style={styles.emptyContainer}>
-                <Ionicons name="chatbubble-ellipses-outline" size={36} color={colors.light.textTertiary} />
-                <Text style={styles.emptyText}>No messages yet. Say hello when you are ready.</Text>
+                <View style={styles.emptyIconWrap}>
+                  <Ionicons name="chatbubbles-outline" size={32} color={colors.light.primary} />
+                </View>
+                <Text style={styles.emptyTitle}>Start the conversation</Text>
+                <Text style={styles.emptySubtitle}>Say hello or send a gift to get started</Text>
               </View>
             }
           />
         )}
 
+        {/* ─── Action Panel ─── */}
         {isActionPanelOpen ? (
           <View style={styles.actionPanel}>
-            {QUICK_ACTIONS.map((action) => (
-              <Pressable
-                key={action.key}
-                style={styles.actionItem}
-                onPress={() => handleActionPress(action.key)}
-              >
-                <View style={[styles.actionIcon, { backgroundColor: action.bg }]}>
-                  <Ionicons name={action.icon} size={24} color={action.color} />
-                </View>
-                <Text style={styles.actionLabel}>{action.label}</Text>
-              </Pressable>
-            ))}
+            <View style={styles.actionPanelInner}>
+              {QUICK_ACTIONS.map((action) => (
+                <ActionButton
+                  key={action.key}
+                  action={action}
+                  onPress={() => handleActionPress(action.key)}
+                />
+              ))}
+            </View>
           </View>
         ) : null}
 
-        <View style={styles.composer}>
+        {/* ─── Composer ─── */}
+        <View style={[styles.composer, { paddingBottom: Platform.OS === 'ios' ? Math.max(insets.bottom, 12) : spacing.md }]}>
           <Pressable
-            style={[styles.plusButton, isActionPanelOpen && styles.plusButtonActive]}
+            style={({ pressed }) => [
+              styles.plusButton,
+              isActionPanelOpen && styles.plusButtonActive,
+              pressed && { transform: [{ scale: 0.92 }] },
+            ]}
             onPress={toggleActionPanel}
             disabled={!!loadError}
           >
             <Ionicons
               name={isActionPanelOpen ? 'close' : 'add'}
-              size={24}
+              size={22}
               color={isActionPanelOpen ? '#FFFFFF' : colors.light.primary}
             />
           </Pressable>
-          <TextInput
-            value={draft}
-            onChangeText={setDraft}
-            placeholder="Message"
-            placeholderTextColor={colors.light.textTertiary}
-            style={styles.input}
-            multiline
-            maxLength={1000}
-            editable={!loadError}
-            onFocus={() => setIsActionPanelOpen(false)}
-          />
+          <View style={styles.inputWrap}>
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              placeholder="Message"
+              placeholderTextColor={colors.light.textTertiary}
+              style={styles.input}
+              multiline
+              maxLength={1000}
+              editable={!loadError}
+              onFocus={() => {
+                if (isActionPanelOpen) {
+                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                  setIsActionPanelOpen(false);
+                }
+              }}
+            />
+          </View>
           <Pressable
-            style={[styles.sendButton, (!draft.trim() || isSending) && styles.sendButtonDisabled]}
+            style={({ pressed }) => [
+              styles.sendButton,
+              (!draft.trim() || isSending) && styles.sendButtonDisabled,
+              pressed && draft.trim() && { transform: [{ scale: 0.92 }] },
+            ]}
             onPress={handleSend}
             disabled={!draft.trim() || isSending || !!loadError}
           >
@@ -316,10 +437,69 @@ export default function ChatScreen() {
           </Pressable>
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={isGiftModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setIsGiftModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <Pressable style={styles.modalDismissArea} onPress={() => setIsGiftModalVisible(false)} />
+          <View style={styles.giftSheet}>
+            <View style={styles.giftSheetHandle} />
+            <View style={styles.giftSheetHeader}>
+              <LinearGradient
+                colors={['#6C5CE7', '#8B5CF6']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.giftSheetIcon}
+              >
+                <Ionicons name="gift" size={22} color="#FFFFFF" />
+              </LinearGradient>
+              <View style={styles.giftSheetTitleWrap}>
+                <Text style={styles.giftSheetTitle}>Send Money Gift</Text>
+                <Text style={styles.giftSheetSubtitle}>Demo card only. No wallet balance is moved yet.</Text>
+              </View>
+            </View>
+
+            <Text style={styles.giftInputLabel}>Amount (USD)</Text>
+            <TextInput
+              value={giftAmount}
+              onChangeText={(value) => setGiftAmount(value.replace(/[^0-9.]/g, ''))}
+              keyboardType="decimal-pad"
+              placeholder="25"
+              placeholderTextColor={colors.light.textTertiary}
+              style={styles.giftInput}
+            />
+
+            <Text style={styles.giftInputLabel}>Message</Text>
+            <TextInput
+              value={giftNote}
+              onChangeText={setGiftNote}
+              placeholder="Add a short note"
+              placeholderTextColor={colors.light.textTertiary}
+              style={[styles.giftInput, styles.giftNoteInput]}
+              maxLength={120}
+              multiline
+            />
+
+            <View style={styles.giftActions}>
+              <Pressable style={styles.giftCancelButton} onPress={() => setIsGiftModalVisible(false)}>
+                <Text style={styles.giftCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable style={styles.giftSendButton} onPress={sendDemoGift}>
+                <Text style={styles.giftSendText}>Send Gift</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
+// ─── Message Bubble ───
 function MessageBubble({
   item,
   isMine,
@@ -339,7 +519,7 @@ function MessageBubble({
     <View style={[styles.messageRow, isMine && styles.messageRowMine]}>
       {!isMine ? (
         <View style={styles.rowAvatar}>
-          {showAvatar ? <Avatar name={friendName} uri={friendAvatar} size={30} /> : null}
+          {showAvatar ? <Avatar name={friendName} uri={friendAvatar} size={28} /> : null}
         </View>
       ) : null}
 
@@ -355,9 +535,21 @@ function MessageBubble({
           <Text style={styles.timeText}>{formatTime(item.createdAt)}</Text>
           {isMine ? (
             <Ionicons
-              name={item.localStatus === 'failed' ? 'alert-circle' : 'checkmark-done'}
+              name={
+                item.localStatus === 'failed'
+                  ? 'alert-circle'
+                  : item.localStatus === 'sending'
+                    ? 'time-outline'
+                    : 'checkmark-done'
+              }
               size={13}
-              color={item.localStatus === 'failed' ? colors.light.error : colors.light.textTertiary}
+              color={
+                item.localStatus === 'failed'
+                  ? colors.light.error
+                  : item.localStatus === 'sending'
+                    ? colors.light.textTertiary
+                    : colors.light.primary
+              }
             />
           ) : null}
         </View>
@@ -366,37 +558,71 @@ function MessageBubble({
   );
 }
 
+// ─── Money Gift Card ───
 function MoneyGiftCard({ item, isMine }: { item: LocalChatMessage; isMine: boolean }) {
   const amount = Number(item.metadata?.amount || 0);
   const currency = item.metadata?.currency || 'USD';
 
-  return (
-    <View style={[styles.giftCard, isMine ? styles.giftCardMine : styles.giftCardFriend]}>
-      <View style={styles.giftHeader}>
-        <View style={styles.giftIcon}>
-          <Ionicons name="gift" size={20} color="#FFFFFF" />
+  if (isMine) {
+    return (
+      <LinearGradient
+        colors={['#6C5CE7', '#8B5CF6', '#A78BFA']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.giftCard}
+      >
+        <View style={styles.giftDecoCircle} />
+        <View style={styles.giftHeader}>
+          <View style={styles.giftIconWrap}>
+            <Ionicons name="gift" size={18} color="#FFFFFF" />
+          </View>
+          <View style={styles.giftHeaderText}>
+            <Text style={styles.giftTitle}>{item.metadata?.title || 'Oroya Gift'}</Text>
+            <Text style={styles.giftSubtitle}>{item.metadata?.subtitle || 'Demo money card'}</Text>
+          </View>
         </View>
+        <Text style={styles.giftAmount}>{formatCurrency(amount, currency)}</Text>
+        <Text style={styles.giftMessage}>{item.message}</Text>
+        <View style={styles.demoBadge}>
+          <Text style={styles.demoBadgeText}>Demo only</Text>
+        </View>
+      </LinearGradient>
+    );
+  }
+
+  return (
+    <View style={styles.giftCardFriend}>
+      <View style={styles.giftHeader}>
+        <LinearGradient
+          colors={['#F59E0B', '#FBBF24']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.giftIconWrap}
+        >
+          <Ionicons name="gift" size={18} color="#FFFFFF" />
+        </LinearGradient>
         <View style={styles.giftHeaderText}>
-          <Text style={[styles.giftTitle, !isMine && styles.giftTitleFriend]}>
+          <Text style={[styles.giftTitle, { color: colors.light.textPrimary }]}>
             {item.metadata?.title || 'Oroya Gift'}
           </Text>
-          <Text style={[styles.giftSubtitle, !isMine && styles.giftSubtitleFriend]}>
+          <Text style={[styles.giftSubtitle, { color: colors.light.textSecondary }]}>
             {item.metadata?.subtitle || 'Demo money card'}
           </Text>
         </View>
       </View>
-      <Text style={[styles.giftAmount, !isMine && styles.giftAmountFriend]}>
+      <Text style={[styles.giftAmount, { color: colors.light.primary }]}>
         {formatCurrency(amount, currency)}
       </Text>
-      <Text style={[styles.giftMessage, !isMine && styles.giftMessageFriend]}>{item.message}</Text>
-      <View style={[styles.demoBadge, !isMine && styles.demoBadgeFriend]}>
-        <Text style={[styles.demoBadgeText, !isMine && styles.demoBadgeTextFriend]}>Demo only</Text>
+      <Text style={[styles.giftMessage, { color: colors.light.textSecondary }]}>{item.message}</Text>
+      <View style={styles.demoBadgeFriend}>
+        <Text style={styles.demoBadgeTextFriend}>Demo only</Text>
       </View>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+styles = StyleSheet.create({
+  // ─── Layout ───
   container: {
     flex: 1,
     backgroundColor: colors.light.background,
@@ -404,56 +630,146 @@ const styles = StyleSheet.create({
   keyboardView: {
     flex: 1,
   },
-  headerAvatar: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  presenceRow: {
+
+  // ─── Custom Chat Header ───
+  chatHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.borderLight,
     gap: spacing.xs,
-    marginTop: -spacing.sm,
-    marginBottom: spacing.sm,
   },
-  username: {
-    ...typography.caption,
-    color: colors.light.textTertiary,
-    fontWeight: '700',
+  backBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  onlineDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+  headerCenter: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  headerAvatarWrap: {
+    position: 'relative',
+  },
+  headerOnlineDot: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
     backgroundColor: colors.light.success,
+    borderWidth: 2,
+    borderColor: colors.light.surface,
   },
-  presenceText: {
-    ...typography.caption,
+  headerTextWrap: {
+    flex: 1,
+  },
+  headerName: {
+    ...typography.bodySm,
+    fontWeight: '700',
+    color: colors.light.textPrimary,
+    letterSpacing: -0.2,
+    fontSize: 16,
+  },
+  headerStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 1,
+  },
+  headerSecureIcon: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: colors.light.successLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerStatusText: {
+    fontSize: 11,
     color: colors.light.textTertiary,
+    fontWeight: '500',
   },
+  headerAction: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.light.borderLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // ─── Loading & Empty ───
   loadingContainer: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  emptyContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing['3xl'],
+  },
+  emptyIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#F0EDFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.lg,
+  },
+  emptyTitle: {
+    ...typography.bodySm,
+    fontWeight: '600',
+    color: colors.light.textPrimary,
+    textAlign: 'center',
+    marginBottom: spacing.xs,
+  },
+  emptySubtitle: {
+    ...typography.caption,
+    color: colors.light.textTertiary,
+    textAlign: 'center',
+  },
+  retryButton: {
+    marginTop: spacing.lg,
+    borderRadius: borderRadius.full,
+    backgroundColor: colors.light.primary,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.sm,
+  },
+  retryText: {
+    ...typography.bodySm,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+
+  // ─── Messages ───
   messagesContent: {
     flexGrow: 1,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.md,
     paddingTop: spacing.md,
-    paddingBottom: spacing.lg,
+    paddingBottom: spacing.sm,
   },
   messageRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    marginBottom: spacing.sm,
+    marginBottom: 6,
   },
   messageRowMine: {
     justifyContent: 'flex-end',
   },
   rowAvatar: {
-    width: 36,
+    width: 34,
     alignItems: 'flex-start',
   },
   messageColumn: {
@@ -464,17 +780,17 @@ const styles = StyleSheet.create({
   },
   bubble: {
     borderRadius: 20,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
   bubbleMine: {
     backgroundColor: colors.light.primary,
-    borderBottomRightRadius: borderRadius.sm,
+    borderBottomRightRadius: 6,
   },
   bubbleFriend: {
     backgroundColor: colors.light.surface,
-    borderBottomLeftRadius: borderRadius.sm,
-    borderWidth: 1,
+    borderBottomLeftRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.light.borderLight,
     ...shadows.card,
   },
@@ -491,40 +807,53 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 3,
     marginTop: 3,
-    marginLeft: spacing.sm,
+    marginLeft: spacing.xs,
   },
   metaRowMine: {
     justifyContent: 'flex-end',
-    marginRight: spacing.sm,
+    marginRight: spacing.xs,
   },
   timeText: {
     fontSize: 10,
     color: colors.light.textTertiary,
+    fontWeight: '400',
   },
+
+  // ─── Gift Card ───
   giftCard: {
-    width: 230,
-    borderRadius: borderRadius.lg,
-    padding: spacing.md,
-    ...shadows.card,
+    width: 240,
+    borderRadius: 20,
+    padding: spacing.lg,
+    overflow: 'hidden',
   },
-  giftCardMine: {
-    backgroundColor: colors.light.primary,
+  giftDecoCircle: {
+    position: 'absolute',
+    top: -20,
+    right: -20,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
   giftCardFriend: {
+    width: 240,
+    borderRadius: 20,
+    padding: spacing.lg,
     backgroundColor: colors.light.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.light.borderLight,
+    ...shadows.card,
   },
   giftHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
   },
-  giftIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.light.warning,
+  giftIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255,255,255,0.2)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -534,123 +863,103 @@ const styles = StyleSheet.create({
   giftTitle: {
     ...typography.bodySm,
     color: '#FFFFFF',
-    fontWeight: '800',
-  },
-  giftTitleFriend: {
-    color: colors.light.textPrimary,
+    fontWeight: '700',
   },
   giftSubtitle: {
-    ...typography.caption,
-    color: 'rgba(255,255,255,0.76)',
-  },
-  giftSubtitleFriend: {
-    color: colors.light.textSecondary,
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.7)',
+    marginTop: 1,
   },
   giftAmount: {
-    fontSize: 26,
-    fontWeight: '900',
+    fontSize: 28,
+    fontWeight: '800',
     color: '#FFFFFF',
     marginTop: spacing.md,
-  },
-  giftAmountFriend: {
-    color: colors.light.primary,
+    letterSpacing: -0.5,
   },
   giftMessage: {
-    ...typography.caption,
-    color: 'rgba(255,255,255,0.86)',
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.8)',
     marginTop: spacing.xs,
-  },
-  giftMessageFriend: {
-    color: colors.light.textSecondary,
   },
   demoBadge: {
     alignSelf: 'flex-start',
     marginTop: spacing.md,
-    borderRadius: borderRadius.sm,
-    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: borderRadius.full,
+    backgroundColor: 'rgba(255,255,255,0.15)',
     paddingHorizontal: spacing.sm,
     paddingVertical: 3,
   },
   demoBadgeText: {
-    fontSize: 10,
+    fontSize: 9,
     color: '#FFFFFF',
-    fontWeight: '800',
+    fontWeight: '700',
     textTransform: 'uppercase',
+    letterSpacing: 0.8,
   },
   demoBadgeFriend: {
+    alignSelf: 'flex-start',
+    marginTop: spacing.md,
+    borderRadius: borderRadius.full,
     backgroundColor: '#F0EDFF',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
   },
   demoBadgeTextFriend: {
-    color: colors.light.primary,
-  },
-  emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-  },
-  emptyText: {
-    ...typography.bodySm,
-    color: colors.light.textTertiary,
-    marginTop: spacing.sm,
-    textAlign: 'center',
-  },
-  retryButton: {
-    marginTop: spacing.md,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: colors.light.border,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-  },
-  retryText: {
-    ...typography.bodySm,
+    fontSize: 9,
     color: colors.light.primary,
     fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
   },
+
+  // ─── Action Panel ───
   actionPanel: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.lg,
     backgroundColor: colors.light.surface,
-    borderTopWidth: 1,
+    borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.light.borderLight,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.md,
+  },
+  actionPanelInner: {
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    paddingHorizontal: spacing.md,
   },
   actionItem: {
     alignItems: 'center',
-    width: 74,
+    width: 68,
+    gap: spacing.sm,
   },
-  actionIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 18,
+  actionIconCircle: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: spacing.xs,
   },
   actionLabel: {
-    ...typography.caption,
+    fontSize: 11,
     color: colors.light.textPrimary,
-    textAlign: 'center',
     fontWeight: '600',
+    textAlign: 'center',
   },
+
+  // ─── Composer ───
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: spacing.sm,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
-    paddingBottom: Platform.OS === 'ios' ? spacing.xl : spacing.md,
     backgroundColor: colors.light.surface,
-    borderTopWidth: 1,
+    borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.light.borderLight,
   },
   plusButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#F0EDFF',
@@ -658,28 +967,133 @@ const styles = StyleSheet.create({
   plusButtonActive: {
     backgroundColor: colors.light.primary,
   },
-  input: {
+  inputWrap: {
     flex: 1,
-    maxHeight: 110,
-    minHeight: 44,
-    borderRadius: 18,
-    borderWidth: 1,
+  },
+  input: {
+    maxHeight: 100,
+    minHeight: 40,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.light.border,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
     ...typography.bodySm,
     color: colors.light.textPrimary,
     backgroundColor: colors.light.background,
   },
   sendButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.light.primary,
   },
   sendButtonDisabled: {
-    opacity: 0.5,
+    opacity: 0.4,
+  },
+  modalBackdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  modalDismissArea: {
+    flex: 1,
+  },
+  giftSheet: {
+    backgroundColor: colors.light.surface,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+    paddingBottom: Platform.OS === 'ios' ? spacing['2xl'] : spacing.xl,
+  },
+  giftSheetHandle: {
+    alignSelf: 'center',
+    width: 42,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.light.border,
+    marginBottom: spacing.lg,
+  },
+  giftSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  giftSheetIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  giftSheetTitleWrap: {
+    flex: 1,
+  },
+  giftSheetTitle: {
+    ...typography.h3,
+    color: colors.light.textPrimary,
+    fontWeight: '800',
+  },
+  giftSheetSubtitle: {
+    ...typography.caption,
+    color: colors.light.textSecondary,
+    marginTop: 2,
+  },
+  giftInputLabel: {
+    ...typography.caption,
+    color: colors.light.textSecondary,
+    fontWeight: '700',
+    marginBottom: spacing.xs,
+  },
+  giftInput: {
+    minHeight: 52,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    backgroundColor: colors.light.background,
+    paddingHorizontal: spacing.md,
+    ...typography.bodySm,
+    color: colors.light.textPrimary,
+    marginBottom: spacing.md,
+  },
+  giftNoteInput: {
+    minHeight: 84,
+    paddingTop: spacing.md,
+    textAlignVertical: 'top',
+  },
+  giftActions: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  giftCancelButton: {
+    flex: 1,
+    height: 52,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  giftCancelText: {
+    ...typography.bodySm,
+    color: colors.light.textPrimary,
+    fontWeight: '700',
+  },
+  giftSendButton: {
+    flex: 1,
+    height: 52,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.light.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  giftSendText: {
+    ...typography.bodySm,
+    color: '#FFFFFF',
+    fontWeight: '800',
   },
 });
