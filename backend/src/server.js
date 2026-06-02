@@ -1,4 +1,6 @@
 const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
 const { config } = require('./config');
 const { HttpError, getSafeErrorResponse, sendJson } = require('./http');
 const { pocketBase } = require('./pocketbase');
@@ -110,6 +112,18 @@ async function handleRequest(req, res) {
   if (applyCors(req, res)) return;
 
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+
+  if (req.method === 'GET' && url.pathname === '/admin/notifications-tool') {
+    const filePath = path.resolve(__dirname, '..', 'admin', 'notifications.html');
+    const html = fs.readFileSync(filePath, 'utf8');
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Length': Buffer.byteLength(html),
+      'Cache-Control': 'no-store',
+    });
+    res.end(html);
+    return;
+  }
 
   if (req.method === 'GET' && url.pathname === '/health') {
     sendJson(res, 200, {

@@ -21,7 +21,7 @@
       <p class="hint">Use this only as the app owner. The admin token must come from Render environment variable <strong>OROYA_ADMIN_NOTIFICATION_TOKEN</strong>.</p>
 
       <label>Backend URL</label>
-      <input id="apiUrl" value="https://oroya.onrender.com" />
+      <input id="apiUrl" value="" />
 
       <label>Admin Token</label>
       <input id="token" type="password" autocomplete="off" />
@@ -44,6 +44,11 @@
 
     <script>
       const statusEl = document.getElementById('status');
+      const apiUrlInput = document.getElementById('apiUrl');
+      apiUrlInput.value = window.location.origin && window.location.origin !== 'null'
+        ? window.location.origin
+        : 'https://oroya.onrender.com';
+
       document.getElementById('send').addEventListener('click', async () => {
         statusEl.textContent = 'Sending...';
         const apiUrl = document.getElementById('apiUrl').value.replace(/\/+$/, '');
