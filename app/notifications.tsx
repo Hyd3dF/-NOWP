@@ -11,7 +11,6 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Avatar } from '@/components/ui/Avatar';
 import { colors } from '@/theme/colors';
@@ -63,8 +62,8 @@ export default function NotificationsScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <HeaderBar title="Notifications" showBack onBack={() => router.back()} />
+    <View style={styles.container}>
+      <HeaderBar title="Notifications" showBack onBack={() => router.back()} compact />
 
       {isLoading ? (
         <View style={styles.center}>
@@ -90,12 +89,41 @@ export default function NotificationsScreen() {
           }
         />
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 
 function NotificationRow({ item, onPress }: { item: AppNotification; onPress: () => void }) {
   const iconName = getIconName(item);
+  const isBrandNotification = item.type !== 'friend_request' && item.type !== 'friend_accept';
+
+  if (isBrandNotification) {
+    return (
+      <Pressable style={({ pressed }) => [styles.brandCard, pressed && styles.brandCardPressed]} onPress={onPress}>
+        {item.imageUrl ? (
+          <Image source={{ uri: item.imageUrl }} style={styles.brandImage} resizeMode="cover" />
+        ) : (
+          <View style={styles.brandImageFallback}>
+            <Ionicons name={iconName} size={34} color="#FFFFFF" />
+          </View>
+        )}
+
+        <View style={styles.brandContent}>
+          <View style={styles.brandTitleLine}>
+            <Text style={styles.brandTitle} numberOfLines={2}>{item.title}</Text>
+            {!item.isRead ? <View style={styles.unreadDot} /> : null}
+          </View>
+          <Text style={styles.brandBody} numberOfLines={3}>{item.body}</Text>
+          <View style={styles.brandFooter}>
+            <Text style={styles.time}>{formatDate(item.createdAt)} · {formatTime(item.createdAt)}</Text>
+            <View style={styles.brandBadge}>
+              <Text style={styles.brandBadgeText}>Oroya</Text>
+            </View>
+          </View>
+        </View>
+      </Pressable>
+    );
+  }
 
   return (
     <Pressable style={({ pressed }) => [styles.row, pressed && styles.rowPressed]} onPress={onPress}>
@@ -122,11 +150,12 @@ function NotificationRow({ item, onPress }: { item: AppNotification; onPress: ()
         <Text style={styles.time}>{formatDate(item.createdAt)} · {formatTime(item.createdAt)}</Text>
       </View>
 
-      <Ionicons name="chevron-forward" size={18} color={colors.light.textTertiary} />
+      <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
     </Pressable>
   );
 }
 
+// Map custom notification types to Ionicons
 function getIconName(item: AppNotification): keyof typeof Ionicons.glyphMap {
   if (item.type === 'friend_request') return 'person-add-outline';
   if (item.type === 'friend_accept') return 'checkmark-circle-outline';
@@ -146,21 +175,81 @@ const styles = StyleSheet.create({
   },
   list: {
     paddingHorizontal: spacing.xl,
+    paddingTop: spacing.xs,
     paddingBottom: spacing['2xl'],
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.light.borderLight,
+  },
+  rowPressed: {
+    opacity: 0.75,
+    backgroundColor: colors.light.borderLight,
+  },
+  brandCard: {
+    overflow: 'hidden',
     borderRadius: borderRadius.lg,
     backgroundColor: colors.light.surface,
     borderWidth: 1,
     borderColor: colors.light.borderLight,
-    padding: spacing.md,
-    marginBottom: spacing.md,
+    marginBottom: spacing.lg,
   },
-  rowPressed: {
-    opacity: 0.75,
+  brandCardPressed: {
+    opacity: 0.82,
+  },
+  brandImage: {
+    width: '100%',
+    height: 156,
+    backgroundColor: colors.light.borderLight,
+  },
+  brandImageFallback: {
+    width: '100%',
+    height: 132,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.light.primary,
+  },
+  brandContent: {
+    padding: spacing.md,
+  },
+  brandTitleLine: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+  brandTitle: {
+    ...typography.h3,
+    color: colors.light.textPrimary,
+    fontWeight: '900',
+    flex: 1,
+  },
+  brandBody: {
+    ...typography.bodySm,
+    color: colors.light.textSecondary,
+    lineHeight: 20,
+    marginTop: spacing.xs,
+  },
+  brandFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: spacing.md,
+  },
+  brandBadge: {
+    borderRadius: borderRadius.sm,
+    backgroundColor: '#F0EDFF',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+  },
+  brandBadgeText: {
+    fontSize: 10,
+    color: colors.light.primary,
+    fontWeight: '900',
+    textTransform: 'uppercase',
   },
   iconWrap: {
     width: 48,
@@ -171,12 +260,12 @@ const styles = StyleSheet.create({
   imageIcon: {
     width: 46,
     height: 46,
-    borderRadius: 15,
+    borderRadius: 23,
   },
   iconCircle: {
     width: 46,
     height: 46,
-    borderRadius: 16,
+    borderRadius: 23,
     backgroundColor: colors.light.borderLight,
     alignItems: 'center',
     justifyContent: 'center',
@@ -227,7 +316,7 @@ const styles = StyleSheet.create({
   emptyIcon: {
     width: 68,
     height: 68,
-    borderRadius: 24,
+    borderRadius: 34,
     backgroundColor: '#F0EDFF',
     alignItems: 'center',
     justifyContent: 'center',
