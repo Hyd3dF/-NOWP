@@ -13,6 +13,8 @@ export default function RootLayout() {
   const rootNavigationState = useRootNavigationState();
   const { isAuthenticated, isInitialized, biometricsEnabled, initAuth } = useAuthStore();
   const [isAppLocked, setIsAppLocked] = React.useState(false);
+  const appStateRef = React.useRef(AppState.currentState);
+  const isUnlockingRef = React.useRef(false);
   const rootSegment = segments[0];
 
   useEffect(() => {
@@ -27,25 +29,44 @@ export default function RootLayout() {
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
+      const wasAway = appStateRef.current === 'background' || appStateRef.current === 'inactive';
+      appStateRef.current = state;
+
       if (state === 'background' || state === 'inactive') {
         if (isAuthenticated && biometricsEnabled) setIsAppLocked(true);
+      }
+
+      if (state === 'active' && wasAway && isAuthenticated && biometricsEnabled) {
+        setIsAppLocked(true);
       }
     });
 
     return () => subscription.remove();
   }, [biometricsEnabled, isAuthenticated]);
 
-  const unlockApp = async () => {
+  const unlockApp = React.useCallback(async () => {
+    if (isUnlockingRef.current) return;
+    isUnlockingRef.current = true;
+
     try {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Unlock Oroya',
         fallbackLabel: 'Use device passcode',
+        cancelLabel: 'Cancel',
       });
       if (result.success) setIsAppLocked(false);
     } catch {
       setIsAppLocked(true);
+    } finally {
+      isUnlockingRef.current = false;
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (isInitialized && isAuthenticated && biometricsEnabled && isAppLocked) {
+      unlockApp();
+    }
+  }, [biometricsEnabled, isAppLocked, isAuthenticated, isInitialized, unlockApp]);
 
   useEffect(() => {
     if (!rootNavigationState?.key || !isInitialized) return;

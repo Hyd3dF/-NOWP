@@ -22,6 +22,7 @@ const {
   securityOverview,
   updateBiometricLock,
   updateTwoFactor,
+  verifyPin,
 } = require('./routes/security');
 const { myTransactions } = require('./routes/transactions');
 const { sendTransfer } = require('./routes/transfers');
@@ -50,6 +51,7 @@ const routes = new Map([
   ['GET /security/overview', securityOverview],
   ['POST /security/biometric-lock', updateBiometricLock],
   ['POST /security/two-factor', updateTwoFactor],
+  ['POST /security/verify-pin', verifyPin],
   ['POST /security/change-pin', changePin],
   ['POST /security/change-password', changePassword],
   ['GET /payments/currencies', depositCurrencies],

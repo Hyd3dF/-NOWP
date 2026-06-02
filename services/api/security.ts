@@ -49,6 +49,11 @@ export async function updateTwoFactor(enabled: boolean) {
   return response.twoFactor;
 }
 
+export async function verifySecurityPin(pin: string) {
+  const response = await api.post<{ success: boolean }>('/security/verify-pin', { pin });
+  return response;
+}
+
 export async function changeSecurityPin(currentPin: string, newPin: string) {
   const response = await api.post<{ success: boolean; changedAt: string }>('/security/change-pin', {
     current_pin: currentPin,

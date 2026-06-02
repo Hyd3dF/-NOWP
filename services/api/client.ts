@@ -120,10 +120,11 @@ class OroyaApiClient {
     const data = parseJsonResponse(text);
 
     if (!response.ok) {
-      if (!options.skipAuth && (response.status === 401 || response.status === 403)) {
+      const errorCode = getErrorCode(response.status, data);
+      if (!options.skipAuth && isSessionAuthFailure(response.status, errorCode)) {
         await unauthorizedHandler?.();
       }
-      throw new ApiError(getErrorCode(response.status, data), response.status);
+      throw new ApiError(errorCode, response.status);
     }
 
     return data as T;
@@ -185,6 +186,11 @@ function getErrorCode(status: number, data: unknown) {
   if (status === 422) return 'validation_failed';
   if (status >= 500) return 'server_unavailable';
   return 'request_failed';
+}
+
+function isSessionAuthFailure(status: number, errorCode: string) {
+  if (status !== 401 && status !== 403) return false;
+  return errorCode === 'auth_failed' || errorCode === 'auth_required';
 }
 
 async function getOrCreateDeviceId() {

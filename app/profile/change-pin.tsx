@@ -15,6 +15,8 @@ import { typography } from '@/theme/typography';
 import { spacing } from '@/theme/spacing';
 import { useAuthStore } from '@/stores/authStore';
 import { PinPad } from '@/components/ui/PinPad';
+import { ApiError } from '@/services/api/client';
+import { verifySecurityPin } from '@/services/api/security';
 
 export default function ChangePinScreen() {
   const router = useRouter();
@@ -24,20 +26,44 @@ export default function ChangePinScreen() {
   const [oldPin, setOldPin] = useState('');
   const [newPin, setNewPin] = useState('');
   const [error, setError] = useState('');
+  const [pinPadKey, setPinPadKey] = useState(0);
+  const [isBusy, setIsBusy] = useState(false);
+
+  const resetPad = () => {
+    setPinPadKey((value) => value + 1);
+  };
 
   const handlePinComplete = async (pin: string) => {
+    if (isBusy) return;
     setError('');
 
     if (step === 1) {
-      setOldPin(pin);
-      setStep(2);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setIsBusy(true);
+      try {
+        await verifySecurityPin(pin);
+        setOldPin(pin);
+        setStep(2);
+        resetPad();
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      } catch (error) {
+        const message =
+          error instanceof ApiError && error.code === 'invalid_pin'
+            ? 'Current PIN is incorrect. Try again.'
+            : 'PIN could not be verified. Try again.';
+        setError(message);
+        resetPad();
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      } finally {
+        setIsBusy(false);
+      }
     } else if (step === 2) {
       setNewPin(pin);
       setStep(3);
+      resetPad();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } else {
       if (pin === newPin) {
+        setIsBusy(true);
         try {
           await changePin(oldPin, pin);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -58,12 +84,16 @@ export default function ChangePinScreen() {
           setStep(1);
           setOldPin('');
           setNewPin('');
+          resetPad();
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        } finally {
+          setIsBusy(false);
         }
       } else {
         setError('PINs do not match. Restarting process.');
         setStep(2);
         setNewPin('');
+        resetPad();
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       }
     }
@@ -83,7 +113,7 @@ export default function ChangePinScreen() {
   const getSubtitle = () => {
     switch (step) {
       case 1:
-        return 'Confirm your identity by entering your active PIN.';
+        return isBusy ? 'Checking your current PIN...' : 'Confirm your identity by entering your active PIN.';
       case 2:
         return 'Create a new 4-digit PIN for authorization.';
       case 3:
@@ -113,9 +143,11 @@ export default function ChangePinScreen() {
 
       <View style={styles.pinPadWrapper}>
         <PinPad
+          key={`${step}-${pinPadKey}`}
           onComplete={handlePinComplete}
           error={error}
           title={getTitle()}
+          subtitle={getSubtitle()}
         />
       </View>
     </View>

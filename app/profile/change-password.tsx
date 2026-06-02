@@ -14,6 +14,7 @@ import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { changePassword } from '@/services/api/security';
+import { ApiError } from '@/services/api/client';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing } from '@/theme/spacing';
@@ -49,9 +50,15 @@ export default function ChangePasswordScreen() {
       Alert.alert('Password Changed', 'Your login password has been updated.', [
         { text: 'OK', onPress: () => router.back() },
       ]);
-    } catch {
+    } catch (error) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-      setError('Password could not be changed. Check your current password and try again.');
+      if (error instanceof ApiError && error.code === 'current_password_invalid') {
+        setError('Current password is incorrect. Try again.');
+      } else if (error instanceof ApiError && error.code === 'weak_password') {
+        setError('New password must be stronger.');
+      } else {
+        setError('Password could not be changed. Please try again.');
+      }
     } finally {
       setIsLoading(false);
     }

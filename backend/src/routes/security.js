@@ -74,6 +74,32 @@ async function updateTwoFactor(req, res) {
   });
 }
 
+async function verifyPin(req, res) {
+  const token = getBearerToken(req);
+  const user = await pocketBase.authenticateBearer(token);
+  const body = await parseJsonBody(req);
+  const requestContext = getRequestContext(req);
+  const pin = pickString(body, 'pin');
+
+  if (!/^\d{4}$/.test(pin)) {
+    throw new HttpError(400, 'PIN must be 4 digits.', {
+      code: 'invalid_pin_format',
+    });
+  }
+
+  await pocketBase.verifyUserPin(user, pin);
+  await pocketBase.createAuditLog({
+    userId: user.id,
+    action: 'security.pin_verify',
+    ...requestContext,
+    metadata: {},
+  });
+
+  sendJson(res, 200, {
+    success: true,
+  });
+}
+
 async function changePin(req, res) {
   const token = getBearerToken(req);
   const user = await pocketBase.authenticateBearer(token);
@@ -88,7 +114,17 @@ async function changePin(req, res) {
     });
   }
 
-  const result = await pocketBase.changeSecurityPin(user, currentPin, newPin);
+  let result;
+  try {
+    result = await pocketBase.changeSecurityPin(user, currentPin, newPin);
+  } catch (error) {
+    if (error.status === 401 && error.details?.code === 'invalid_pin') {
+      throw new HttpError(400, 'Current PIN is incorrect.', {
+        code: 'invalid_pin',
+      });
+    }
+    throw error;
+  }
   await pocketBase.createAuditLog({
     userId: user.id,
     action: 'security.pin_change',
@@ -116,7 +152,17 @@ async function changePassword(req, res) {
     });
   }
 
-  const result = await pocketBase.changePassword(user, currentPassword, newPassword);
+  let result;
+  try {
+    result = await pocketBase.changePassword(user, currentPassword, newPassword);
+  } catch (error) {
+    if (error.status === 401) {
+      throw new HttpError(400, 'Current password is incorrect.', {
+        code: 'current_password_invalid',
+      });
+    }
+    throw error;
+  }
   await pocketBase.createAuditLog({
     userId: user.id,
     action: 'security.password_change',
@@ -140,4 +186,5 @@ module.exports = {
   securityOverview,
   updateBiometricLock,
   updateTwoFactor,
+  verifyPin,
 };
