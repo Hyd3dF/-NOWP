@@ -15,6 +15,8 @@ export default function RootLayout() {
   const [isAppLocked, setIsAppLocked] = React.useState(false);
   const appStateRef = React.useRef(AppState.currentState);
   const isUnlockingRef = React.useRef(false);
+  const hasAppliedInitialLockRef = React.useRef(false);
+  const lastUnlockAtRef = React.useRef(0);
   const rootSegment = segments[0];
 
   useEffect(() => {
@@ -22,7 +24,14 @@ export default function RootLayout() {
   }, [initAuth]);
 
   useEffect(() => {
-    if (isInitialized && isAuthenticated && biometricsEnabled) {
+    if (!isAuthenticated || !biometricsEnabled) {
+      hasAppliedInitialLockRef.current = false;
+      setIsAppLocked(false);
+      return;
+    }
+
+    if (isInitialized && !hasAppliedInitialLockRef.current) {
+      hasAppliedInitialLockRef.current = true;
       setIsAppLocked(true);
     }
   }, [biometricsEnabled, isAuthenticated, isInitialized]);
@@ -32,11 +41,14 @@ export default function RootLayout() {
       const wasAway = appStateRef.current === 'background' || appStateRef.current === 'inactive';
       appStateRef.current = state;
 
+      if (isUnlockingRef.current) return;
+
       if (state === 'background' || state === 'inactive') {
         if (isAuthenticated && biometricsEnabled) setIsAppLocked(true);
       }
 
       if (state === 'active' && wasAway && isAuthenticated && biometricsEnabled) {
+        if (Date.now() - lastUnlockAtRef.current < 1200) return;
         setIsAppLocked(true);
       }
     });
@@ -54,7 +66,10 @@ export default function RootLayout() {
         fallbackLabel: 'Use device passcode',
         cancelLabel: 'Cancel',
       });
-      if (result.success) setIsAppLocked(false);
+      if (result.success) {
+        lastUnlockAtRef.current = Date.now();
+        setIsAppLocked(false);
+      }
     } catch {
       setIsAppLocked(true);
     } finally {
