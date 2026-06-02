@@ -43,6 +43,31 @@ function jsonField(name, maxSize = 4000) {
   };
 }
 
+function boolField(name, required = false) {
+  return {
+    name,
+    type: 'bool',
+    required,
+    hidden: false,
+    system: false,
+    presentable: false,
+  };
+}
+
+function numberField(name, options = {}) {
+  return {
+    name,
+    type: 'number',
+    required: Boolean(options.required),
+    hidden: false,
+    system: false,
+    min: options.min ?? null,
+    max: options.max ?? null,
+    onlyInt: Boolean(options.onlyInt),
+    presentable: false,
+  };
+}
+
 function relationField(name, collectionId, options = {}) {
   return {
     name,
@@ -180,6 +205,56 @@ async function main() {
     textField('link_url', { max: 500 }),
     jsonField('metadata', 4000),
     dateField('published_at'),
+  ]);
+
+  await ensureCollection('biometric_locks', [
+    relationField('user_id', USERS_COLLECTION_ID, { required: true, cascadeDelete: true }),
+    textField('device_id', { required: true, min: 8, max: 140 }),
+    boolField('enabled', true),
+    textField('device_platform', { max: 40 }),
+    textField('device_info', { max: 300 }),
+    dateField('last_verified_at'),
+    dateField('created_at'),
+    dateField('updated_at'),
+  ]);
+
+  await ensureCollection('two_factor_settings', [
+    relationField('user_id', USERS_COLLECTION_ID, { required: true, cascadeDelete: true }),
+    boolField('enabled', true),
+    textField('method', { required: true, max: 40 }),
+    boolField('transfer_required', true),
+    dateField('created_at'),
+    dateField('updated_at'),
+  ]);
+
+  await ensureCollection('security_pins', [
+    relationField('user_id', USERS_COLLECTION_ID, { required: true, cascadeDelete: true }),
+    textField('pin_hash', { required: true, max: 220 }),
+    numberField('failed_attempt_count', { onlyInt: true, min: 0 }),
+    dateField('locked_until'),
+    dateField('changed_at'),
+    dateField('created_at'),
+    dateField('updated_at'),
+  ]);
+
+  await ensureCollection('password_credentials', [
+    relationField('user_id', USERS_COLLECTION_ID, { required: true, cascadeDelete: true }),
+    dateField('changed_at'),
+    numberField('strength_score', { onlyInt: true, min: 0, max: 5 }),
+    dateField('created_at'),
+    dateField('updated_at'),
+  ]);
+
+  await ensureCollection('device_sessions', [
+    relationField('user_id', USERS_COLLECTION_ID, { required: true, cascadeDelete: true }),
+    textField('device_id', { required: true, min: 8, max: 140 }),
+    textField('device_platform', { max: 40 }),
+    textField('device_info', { max: 300 }),
+    textField('last_ip_address', { max: 80 }),
+    dateField('first_seen_at'),
+    dateField('last_seen_at'),
+    dateField('created_at'),
+    dateField('updated_at'),
   ]);
 
   await pocketBase.testConnection();

@@ -16,7 +16,6 @@ import { spacing, borderRadius, shadows } from '@/theme/spacing';
 import { useSendStore } from '@/stores/sendStore';
 import { useWalletStore } from '@/stores/walletStore';
 import { useTransactionStore } from '@/stores/transactionStore';
-import { useAuthStore } from '@/stores/authStore';
 import { ApiError } from '@/services/api/client';
 import { sendInternalTransfer } from '@/services/api/transfers';
 import { HeaderBar } from '@/components/shared/HeaderBar';
@@ -32,7 +31,6 @@ export default function SendConfirmScreen() {
   const { recipientId, recipientName, recipientUsername, recipientAvatar, amount, note, setLastTransaction, reset } = useSendStore();
   const { wallet, fetchWallet } = useWalletStore();
   const { fetchTransactions } = useTransactionStore();
-  const { verifyPin } = useAuthStore();
 
   const [pinModalVisible, setPinModalVisible] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -46,12 +44,6 @@ export default function SendConfirmScreen() {
 
   const handlePinComplete = async (pin: string) => {
     setPinError('');
-    const isValid = verifyPin(pin);
-    if (!isValid) {
-      setPinError('Invalid security PIN');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-      return;
-    }
 
     setPinModalVisible(false);
     setProcessing(true);

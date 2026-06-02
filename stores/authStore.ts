@@ -8,6 +8,7 @@ import { useSendStore } from './sendStore';
 import { useTransactionStore } from './transactionStore';
 import { useWalletStore } from './walletStore';
 import { useChatStore } from './chatStore';
+import { changeSecurityPin } from '../services/api/security';
 
 interface BackendUser {
   id: string;
@@ -75,6 +76,7 @@ interface AuthState {
   signup: (input: SignupInput) => Promise<void>;
   logout: () => Promise<void>;
   setPin: (pin: string) => Promise<void>;
+  changePin: (currentPin: string, newPin: string) => Promise<void>;
   verifyPin: (pin: string) => boolean;
   updateProfile: (updates: ProfileUpdateInput) => Promise<void>;
   setBiometricsEnabled: (enabled: boolean) => Promise<void>;
@@ -288,6 +290,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       console.warn('Failed to save PIN securely');
     }
     set({ pin });
+  },
+
+  changePin: async (currentPin: string, newPin: string) => {
+    await changeSecurityPin(currentPin, newPin);
+    try {
+      await SecureStore.setItemAsync(SECURE_KEYS.PIN, newPin);
+    } catch {
+      console.warn('Failed to save updated PIN securely');
+    }
+    set({ pin: newPin });
   },
 
   verifyPin: (pin: string) => {

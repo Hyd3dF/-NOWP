@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -9,26 +9,51 @@ import {
   Pressable,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius } from '@/theme/spacing';
-import { HeaderBar } from '@/components/shared/HeaderBar';
-import { Card } from '@/components/ui/Card';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
 import { useAuthStore } from '@/stores/authStore';
+import { HeaderBar } from '@/components/shared/HeaderBar';
+import {
+  fetchSecurityOverview,
+  SecurityOverview,
+  updateBiometricLock,
+  updateTwoFactor,
+} from '@/services/api/security';
 
 export default function SecuritySettingsScreen() {
   const router = useRouter();
   const { biometricsEnabled, setBiometricsEnabled } = useAuthStore();
+  const [security, setSecurity] = useState<SecurityOverview | null>(null);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
+  const [isSavingBiometric, setIsSavingBiometric] = useState(false);
+  const [isSaving2FA, setIsSaving2FA] = useState(false);
+
+  useEffect(() => {
+    fetchSecurityOverview()
+      .then((overview) => {
+        setSecurity(overview);
+        setTwoFactorEnabled(overview.twoFactor.enabled);
+        if (overview.biometricLock.enabled !== biometricsEnabled) {
+          setBiometricsEnabled(overview.biometricLock.enabled);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleBiometricsToggle = async (val: boolean) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     if (!val) {
-      setBiometricsEnabled(false);
+      setIsSavingBiometric(true);
+      try {
+        await updateBiometricLock(false);
+        await setBiometricsEnabled(false);
+      } finally {
+        setIsSavingBiometric(false);
+      }
       return;
     }
 
@@ -52,11 +77,17 @@ export default function SecuritySettingsScreen() {
       });
 
       if (result.success) {
-        setBiometricsEnabled(true);
+        setIsSavingBiometric(true);
+        try {
+          await updateBiometricLock(true);
+          await setBiometricsEnabled(true);
+        } finally {
+          setIsSavingBiometric(false);
+        }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         Alert.alert(
           'Biometrics Enabled',
-          'You can now use Face ID / Touch ID to authorize transactions.'
+          'Oroya will lock when the app goes to the background and ask for Face ID / fingerprint when you return.'
         );
       } else {
         setBiometricsEnabled(false);
@@ -69,104 +100,134 @@ export default function SecuritySettingsScreen() {
     }
   };
 
-  const handle2FAToggle = (val: boolean) => {
+  const handle2FAToggle = async (val: boolean) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    const previous = twoFactorEnabled;
     setTwoFactorEnabled(val);
+    setIsSaving2FA(true);
+    try {
+      const updated = await updateTwoFactor(val);
+      setTwoFactorEnabled(updated.enabled);
+      if (val) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        Alert.alert(
+          'Two-Factor Authentication',
+          'Two-factor settings are now saved on your account.'
+        );
+      }
+    } catch {
+      setTwoFactorEnabled(previous);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      Alert.alert('Two-Factor Authentication', 'We could not update this setting. Please try again.');
+    } finally {
+      setIsSaving2FA(false);
+    }
     if (val) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      Alert.alert(
-        'Two-Factor Authentication',
-        'Two-factor authentication will protect sensitive account actions.'
-      );
     }
   };
 
-  const handleAction = (label: string) => {
-    Alert.alert(label, 'For your security, please confirm this change from your account settings.');
-  };
-
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <HeaderBar title="Security Settings" showBack onBack={() => router.back()} />
+    <View style={styles.container}>
+      <HeaderBar title="Security Settings" showBack onBack={() => router.back()} compact />
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <Text style={styles.sectionTitle}>Authentication</Text>
-        <Card variant="default" style={styles.card}>
-          <View style={styles.row}>
-            <View style={styles.rowLeft}>
-              <Ionicons name="finger-print" size={22} color={colors.light.primary} />
-              <View>
-                <Text style={styles.rowTitle}>Biometric Lock</Text>
-                <Text style={styles.rowSubtitle}>Unlock app with Face ID / Fingerprint</Text>
-              </View>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        {/* Authentication */}
+        <Text style={styles.sectionLabel}>Authentication</Text>
+        
+        {/* Biometrics */}
+        <View style={styles.row}>
+          <View style={styles.rowLeft}>
+            <Ionicons name="finger-print-outline" size={20} color={colors.light.textSecondary} />
+            <View style={styles.rowTexts}>
+              <Text style={styles.rowTitle}>Biometric Lock</Text>
+              <Text style={styles.rowSubtitle}>Unlock app with Face ID / Fingerprint</Text>
             </View>
-            <Switch
-              value={biometricsEnabled}
-              onValueChange={handleBiometricsToggle}
-              trackColor={{ false: colors.light.border, true: colors.light.primaryLight }}
-              thumbColor={biometricsEnabled ? colors.light.primary : '#F4F3F4'}
-            />
           </View>
-          <View style={styles.divider} />
+          <Switch
+            value={biometricsEnabled}
+            onValueChange={handleBiometricsToggle}
+            disabled={isSavingBiometric}
+            trackColor={{ false: colors.light.border, true: colors.light.primaryLight }}
+            thumbColor={biometricsEnabled ? colors.light.primary : '#F4F3F4'}
+          />
+        </View>
 
-          <View style={styles.row}>
-            <View style={styles.rowLeft}>
-              <Ionicons name="shield-checkmark" size={22} color={colors.light.primary} />
-              <View>
-                <Text style={styles.rowTitle}>Two-Factor Authentication</Text>
-                <Text style={styles.rowSubtitle}>Request OTP code for transfers</Text>
-              </View>
+        {/* 2FA */}
+        <View style={[styles.row, { borderBottomWidth: 0 }]}>
+          <View style={styles.rowLeft}>
+            <Ionicons name="shield-checkmark-outline" size={20} color={colors.light.textSecondary} />
+            <View style={styles.rowTexts}>
+              <Text style={styles.rowTitle}>Two-Factor Authentication</Text>
+              <Text style={styles.rowSubtitle}>Request OTP code for transfers</Text>
             </View>
-            <Switch
-              value={twoFactorEnabled}
-              onValueChange={handle2FAToggle}
-              trackColor={{ false: colors.light.border, true: colors.light.primaryLight }}
-              thumbColor={twoFactorEnabled ? colors.light.primary : '#F4F3F4'}
-            />
           </View>
-        </Card>
+          <Switch
+            value={twoFactorEnabled}
+            onValueChange={handle2FAToggle}
+            disabled={isSaving2FA}
+            trackColor={{ false: colors.light.border, true: colors.light.primaryLight }}
+            thumbColor={twoFactorEnabled ? colors.light.primary : '#F4F3F4'}
+          />
+        </View>
 
-        <Text style={styles.sectionTitle}>Credentials</Text>
-        <Card variant="default" style={styles.card}>
-          <Pressable style={styles.pressableRow} onPress={() => router.push('/profile/change-pin')}>
-            <View style={styles.rowLeft}>
-              <Ionicons name="key" size={22} color={colors.light.primary} />
-              <View>
-                <Text style={styles.rowTitle}>Change Security PIN</Text>
-                <Text style={styles.rowSubtitle}>Update your 4-digit code</Text>
-              </View>
+        {/* Credentials */}
+        <Text style={styles.sectionLabel}>Credentials</Text>
+        
+        {/* PIN */}
+        <Pressable
+          style={({ pressed }) => [
+            styles.row,
+            pressed && { backgroundColor: colors.light.borderLight },
+          ]}
+          onPress={() => router.push('/profile/change-pin')}
+        >
+          <View style={styles.rowLeft}>
+            <Ionicons name="key-outline" size={20} color={colors.light.textSecondary} />
+            <View style={styles.rowTexts}>
+              <Text style={styles.rowTitle}>Change Security PIN</Text>
+              <Text style={styles.rowSubtitle}>Update your 4-digit code</Text>
             </View>
-            <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
-          </Pressable>
-          <View style={styles.divider} />
-
-          <Pressable style={styles.pressableRow} onPress={() => handleAction('Change Password')}>
-            <View style={styles.rowLeft}>
-              <Ionicons name="lock-closed" size={22} color={colors.light.primary} />
-              <View>
-                <Text style={styles.rowTitle}>Change Password</Text>
-                <Text style={styles.rowSubtitle}>Choose a stronger login password</Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
-          </Pressable>
-        </Card>
-
-        <Text style={styles.sectionTitle}>Devices</Text>
-        <Card variant="default" style={styles.card}>
-          <View style={styles.pressableRow}>
-            <View style={styles.rowLeft}>
-              <Ionicons name="phone-portrait-outline" size={22} color={colors.light.primary} />
-              <View>
-                <Text style={styles.rowTitle}>Current Device</Text>
-                <Text style={styles.rowSubtitle}>Current session</Text>
-              </View>
-            </View>
-            <Text style={styles.badgeText}>This Device</Text>
           </View>
-        </Card>
+          <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
+        </Pressable>
+
+        {/* Password */}
+        <Pressable
+          style={({ pressed }) => [
+            styles.row,
+            { borderBottomWidth: 0 },
+            pressed && { backgroundColor: colors.light.borderLight },
+          ]}
+          onPress={() => router.push('/profile/change-password')}
+        >
+          <View style={styles.rowLeft}>
+            <Ionicons name="lock-closed-outline" size={20} color={colors.light.textSecondary} />
+            <View style={styles.rowTexts}>
+              <Text style={styles.rowTitle}>Change Password</Text>
+              <Text style={styles.rowSubtitle}>Choose a stronger login password</Text>
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
+        </Pressable>
+
+        {/* Devices */}
+        <Text style={styles.sectionLabel}>Devices</Text>
+        
+        <View style={[styles.row, { borderBottomWidth: 0 }]}>
+          <View style={styles.rowLeft}>
+            <Ionicons name="phone-portrait-outline" size={20} color={colors.light.textSecondary} />
+            <View style={styles.rowTexts}>
+              <Text style={styles.rowTitle}>Current Device</Text>
+              <Text style={styles.rowSubtitle}>
+                {security?.devices.find((device) => device.isCurrent)?.platform || 'Current session'}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.badgeText}>This Device</Text>
+        </View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -175,31 +236,27 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.light.background,
   },
-  content: {
+  scrollContent: {
     paddingHorizontal: spacing.xl,
-    paddingBottom: spacing.xl,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing['2xl'],
   },
-  sectionTitle: {
-    ...typography.h3,
-    color: colors.light.textPrimary,
-    fontWeight: '700',
+  sectionLabel: {
+    ...typography.caption,
+    color: colors.light.textTertiary,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
     marginTop: spacing.xl,
-    marginBottom: spacing.md,
-  },
-  card: {
-    paddingHorizontal: spacing.md,
+    marginBottom: spacing.xs,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: spacing.lg,
-  },
-  pressableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: spacing.lg,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.light.borderLight,
   },
   rowLeft: {
     flexDirection: 'row',
@@ -207,19 +264,18 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     flex: 1,
   },
+  rowTexts: {
+    flex: 1,
+  },
   rowTitle: {
     ...typography.bodySm,
     color: colors.light.textPrimary,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   rowSubtitle: {
     ...typography.caption,
     color: colors.light.textTertiary,
     marginTop: 2,
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.light.borderLight,
   },
   badgeText: {
     ...typography.caption,

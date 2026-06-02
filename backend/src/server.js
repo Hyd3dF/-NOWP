@@ -16,6 +16,13 @@ const {
 } = require('./routes/friends');
 const { createDeposit, depositCurrencies, nowPaymentsWebhook } = require('./routes/payments');
 const { listNotifications, markNotificationRead } = require('./routes/notifications');
+const {
+  changePassword,
+  changePin,
+  securityOverview,
+  updateBiometricLock,
+  updateTwoFactor,
+} = require('./routes/security');
 const { myTransactions } = require('./routes/transactions');
 const { sendTransfer } = require('./routes/transfers');
 const { me, paymentProfile, updateMe } = require('./routes/users');
@@ -40,6 +47,11 @@ const routes = new Map([
   ['GET /notifications', listNotifications],
   ['POST /notifications/read', markNotificationRead],
   ['POST /admin/notifications', createAdminNotification],
+  ['GET /security/overview', securityOverview],
+  ['POST /security/biometric-lock', updateBiometricLock],
+  ['POST /security/two-factor', updateTwoFactor],
+  ['POST /security/change-pin', changePin],
+  ['POST /security/change-password', changePassword],
   ['GET /payments/currencies', depositCurrencies],
   ['POST /payments/create-deposit', createDeposit],
   ['POST /payments/nowpayments-webhook', nowPaymentsWebhook],

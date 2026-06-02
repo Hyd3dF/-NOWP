@@ -4,20 +4,22 @@ import {
   Text,
   View,
   Alert,
+  Pressable,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
-import { spacing, borderRadius } from '@/theme/spacing';
+import { spacing } from '@/theme/spacing';
 import { useAuthStore } from '@/stores/authStore';
-import { HeaderBar } from '@/components/shared/HeaderBar';
 import { PinPad } from '@/components/ui/PinPad';
 
 export default function ChangePinScreen() {
   const router = useRouter();
-  const { verifyPin, setPin } = useAuthStore();
+  const insets = useSafeAreaInsets();
+  const { changePin } = useAuthStore();
   const [step, setStep] = useState<1 | 2 | 3>(1); // 1: Enter Old PIN, 2: Enter New PIN, 3: Confirm New PIN
   const [oldPin, setOldPin] = useState('');
   const [newPin, setNewPin] = useState('');
@@ -27,35 +29,37 @@ export default function ChangePinScreen() {
     setError('');
 
     if (step === 1) {
-      const isValid = verifyPin(pin);
-      if (isValid) {
-        setOldPin(pin);
-        setStep(2);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      } else {
-        setError('Incorrect current PIN. Try again.');
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-      }
+      setOldPin(pin);
+      setStep(2);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } else if (step === 2) {
       setNewPin(pin);
       setStep(3);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } else {
       if (pin === newPin) {
-        await setPin(pin);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-        Alert.alert(
-          'PIN Changed',
-          'Your security PIN has been updated successfully.',
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                router.back();
+        try {
+          await changePin(oldPin, pin);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          Alert.alert(
+            'PIN Changed',
+            'Your security PIN has been updated successfully.',
+            [
+              {
+                text: 'OK',
+                onPress: () => {
+                  router.back();
+                },
               },
-            },
-          ]
-        );
+            ]
+          );
+        } catch {
+          setError('PIN could not be changed. Check your current PIN and try again.');
+          setStep(1);
+          setOldPin('');
+          setNewPin('');
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        }
       } else {
         setError('PINs do not match. Restarting process.');
         setStep(2);
@@ -88,8 +92,19 @@ export default function ChangePinScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <HeaderBar title="Change PIN" showBack onBack={() => router.back()} />
+    <View style={styles.container}>
+      {/* ─── Header ─── */}
+      <View style={[styles.headerContainer, { paddingTop: insets.top + 12 }]}>
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.7 }]}
+          hitSlop={8}
+        >
+          <Ionicons name="chevron-back" size={24} color={colors.light.textPrimary} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Change PIN</Text>
+        <View style={{ width: 44 }} />
+      </View>
 
       <View style={styles.header}>
         <Text style={styles.title}>{getTitle()}</Text>
@@ -103,7 +118,7 @@ export default function ChangePinScreen() {
           title={getTitle()}
         />
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -114,10 +129,34 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingBottom: spacing.xl,
   },
+
+  // ─── Header ───
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.background,
+  },
+  backButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.light.textPrimary,
+  },
+
+  // ─── Body Header ───
   header: {
     alignItems: 'center',
     paddingHorizontal: spacing['2xl'],
-    marginTop: spacing['3xl'],
+    marginTop: spacing['2xl'],
   },
   title: {
     ...typography.h2,

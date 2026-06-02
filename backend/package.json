@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "check": "node --check src/server.js && node --check src/config.js && node --check src/http.js && node --check src/pocketbase.js && node --check src/nowpayments.js && node --check src/routes/adminNotifications.js && node --check src/routes/auth.js && node --check src/routes/chats.js && node --check src/routes/friends.js && node --check src/routes/notifications.js && node --check src/routes/payments.js && node --check src/routes/transactions.js && node --check src/routes/transfers.js && node --check src/routes/users.js && node --check src/routes/wallets.js && node --check src/scripts/test-pocketbase.js && node --check src/scripts/sync-pocketbase-schema.js",
+    "check": "node --check src/server.js && node --check src/config.js && node --check src/http.js && node --check src/pocketbase.js && node --check src/nowpayments.js && node --check src/routes/adminNotifications.js && node --check src/routes/auth.js && node --check src/routes/chats.js && node --check src/routes/friends.js && node --check src/routes/notifications.js && node --check src/routes/payments.js && node --check src/routes/security.js && node --check src/routes/transactions.js && node --check src/routes/transfers.js && node --check src/routes/users.js && node --check src/routes/wallets.js && node --check src/scripts/test-pocketbase.js && node --check src/scripts/sync-pocketbase-schema.js",
     "schema:sync": "node src/scripts/sync-pocketbase-schema.js",
     "test:pb": "node src/scripts/test-pocketbase.js"
   }

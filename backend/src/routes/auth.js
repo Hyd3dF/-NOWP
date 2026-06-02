@@ -52,6 +52,8 @@ async function register(req, res) {
       await pocketBase.updateUser(existing.id, { last_login_at: new Date().toISOString() });
       await pocketBase.ensureDefaultWallet(existing.id);
       await pocketBase.ensurePaymentProfile(existing);
+      await pocketBase.ensureSecurityPin(existing).catch(() => {});
+      await pocketBase.upsertDeviceSession(existing.id, requestContext).catch(() => {});
       await pocketBase.recordDeviceUsage(requestContext, {
         userId: existing.id,
         loggedIn: true,
@@ -80,6 +82,8 @@ async function register(req, res) {
     user = await pocketBase.createUser(input);
     await pocketBase.createWallet(user.id);
     await pocketBase.ensurePaymentProfile(user);
+    await pocketBase.ensureSecurityPin(user).catch(() => {});
+    await pocketBase.upsertDeviceSession(user.id, requestContext).catch(() => {});
     await pocketBase.recordDeviceUsage(requestContext, {
       userId: user.id,
       accountCreated: true,
@@ -138,6 +142,8 @@ async function login(req, res) {
     await pocketBase.updateUser(user.id, { last_login_at: new Date().toISOString() });
     await pocketBase.ensureDefaultWallet(user.id);
     await pocketBase.ensurePaymentProfile(user);
+    await pocketBase.ensureSecurityPin(user).catch(() => {});
+    await pocketBase.upsertDeviceSession(user.id, requestContext).catch(() => {});
     await pocketBase.recordDeviceUsage(requestContext, {
       userId: user.id,
       loggedIn: true,

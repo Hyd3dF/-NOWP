@@ -380,18 +380,329 @@ class PocketBaseClient {
     };
   }
 
-  verifyUserPin(user, pin) {
-    if (!user?.pin_hash) {
+  async verifyUserPin(user, pin) {
+    const pinRecord = await this.getSecurityPin(user.id).catch(() => null);
+    const storedPinHash = pinRecord?.pin_hash || user?.pin_hash || '';
+
+    if (!storedPinHash) {
       throw new HttpError(403, 'Security PIN is not configured.', {
         code: 'pin_not_configured',
       });
     }
 
-    if (!/^\d{4}$/.test(String(pin || '')) || !verifySecret(pin, user.pin_hash)) {
+    if (!/^\d{4}$/.test(String(pin || '')) || !verifySecret(pin, storedPinHash)) {
+      if (pinRecord) {
+        await this.adminRequest(`/api/collections/security_pins/records/${encodeURIComponent(pinRecord.id)}`, {
+          method: 'PATCH',
+          body: {
+            failed_attempt_count: Number(pinRecord.failed_attempt_count || 0) + 1,
+            updated_at: new Date().toISOString(),
+          },
+        }).catch(() => {});
+      }
       throw new HttpError(401, 'Invalid security PIN.', {
         code: 'invalid_pin',
       });
     }
+
+    if (pinRecord && Number(pinRecord.failed_attempt_count || 0) > 0) {
+      await this.adminRequest(`/api/collections/security_pins/records/${encodeURIComponent(pinRecord.id)}`, {
+        method: 'PATCH',
+        body: {
+          failed_attempt_count: 0,
+          updated_at: new Date().toISOString(),
+        },
+      }).catch(() => {});
+    }
+  }
+
+  async getSecurityPin(userId) {
+    const filter = encodeURIComponent(`user_id = "${escapeFilterValue(userId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/security_pins/records?filter=${filter}&perPage=1`,
+    );
+    return result.items?.[0] || null;
+  }
+
+  async ensureSecurityPin(user) {
+    const existing = await this.getSecurityPin(user.id).catch(() => null);
+    if (existing || !user.pin_hash) return existing;
+
+    const now = new Date().toISOString();
+    return this.adminRequest('/api/collections/security_pins/records', {
+      method: 'POST',
+      body: {
+        user_id: user.id,
+        pin_hash: user.pin_hash,
+        failed_attempt_count: 0,
+        locked_until: '',
+        changed_at: user.updated_at || user.created_at || now,
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  async changeSecurityPin(user, currentPin, newPin) {
+    if (!/^\d{4}$/.test(String(newPin || ''))) {
+      throw new HttpError(400, 'New PIN must be 4 digits.', {
+        code: 'invalid_new_pin',
+      });
+    }
+
+    await this.verifyUserPin(user, currentPin);
+    const now = new Date().toISOString();
+    const pinHash = hashSecret(newPin);
+    const existing = await this.ensureSecurityPin(user);
+
+    if (existing) {
+      await this.adminRequest(`/api/collections/security_pins/records/${encodeURIComponent(existing.id)}`, {
+        method: 'PATCH',
+        body: {
+          pin_hash: pinHash,
+          failed_attempt_count: 0,
+          locked_until: '',
+          changed_at: now,
+          updated_at: now,
+        },
+      });
+    } else {
+      await this.adminRequest('/api/collections/security_pins/records', {
+        method: 'POST',
+        body: {
+          user_id: user.id,
+          pin_hash: pinHash,
+          failed_attempt_count: 0,
+          locked_until: '',
+          changed_at: now,
+          created_at: now,
+          updated_at: now,
+        },
+      });
+    }
+
+    await this.updateUser(user.id, { pin_hash: pinHash });
+    return { changedAt: now };
+  }
+
+  async getTwoFactorSettings(userId) {
+    const filter = encodeURIComponent(`user_id = "${escapeFilterValue(userId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/two_factor_settings/records?filter=${filter}&perPage=1`,
+    );
+    return result.items?.[0] || null;
+  }
+
+  async upsertTwoFactorSettings(userId, enabled) {
+    const existing = await this.getTwoFactorSettings(userId).catch(() => null);
+    const now = new Date().toISOString();
+    const body = {
+      enabled: Boolean(enabled),
+      method: 'app_otp',
+      transfer_required: Boolean(enabled),
+      updated_at: now,
+    };
+
+    if (existing) {
+      return this.adminRequest(`/api/collections/two_factor_settings/records/${encodeURIComponent(existing.id)}`, {
+        method: 'PATCH',
+        body,
+      });
+    }
+
+    return this.adminRequest('/api/collections/two_factor_settings/records', {
+      method: 'POST',
+      body: {
+        user_id: userId,
+        ...body,
+        created_at: now,
+      },
+    });
+  }
+
+  async getBiometricLock(userId, context) {
+    const deviceId = getStableDeviceId(context);
+    const filter = encodeURIComponent(
+      `user_id = "${escapeFilterValue(userId)}" && device_id = "${escapeFilterValue(deviceId)}"`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/biometric_locks/records?filter=${filter}&perPage=1`,
+    );
+    return result.items?.[0] || null;
+  }
+
+  async upsertBiometricLock(userId, context, enabled) {
+    const existing = await this.getBiometricLock(userId, context).catch(() => null);
+    const now = new Date().toISOString();
+    const body = {
+      enabled: Boolean(enabled),
+      device_platform: context.devicePlatform || '',
+      device_info: context.deviceInfo || '',
+      last_verified_at: enabled ? now : existing?.last_verified_at || '',
+      updated_at: now,
+    };
+
+    if (existing) {
+      return this.adminRequest(`/api/collections/biometric_locks/records/${encodeURIComponent(existing.id)}`, {
+        method: 'PATCH',
+        body,
+      });
+    }
+
+    return this.adminRequest('/api/collections/biometric_locks/records', {
+      method: 'POST',
+      body: {
+        user_id: userId,
+        device_id: getStableDeviceId(context),
+        ...body,
+        created_at: now,
+      },
+    });
+  }
+
+  async upsertDeviceSession(userId, context) {
+    if (!userId) return null;
+    const deviceId = getStableDeviceId(context);
+    const filter = encodeURIComponent(
+      `user_id = "${escapeFilterValue(userId)}" && device_id = "${escapeFilterValue(deviceId)}"`,
+    );
+    const now = new Date().toISOString();
+    try {
+      const result = await this.adminRequest(
+        `/api/collections/device_sessions/records?filter=${filter}&perPage=1`,
+      );
+      const existing = result.items?.[0];
+      const body = {
+        device_platform: context.devicePlatform || '',
+        device_info: context.deviceInfo || '',
+        last_ip_address: context.ipAddress || '',
+        last_seen_at: now,
+        updated_at: now,
+      };
+      if (existing) {
+        return this.adminRequest(`/api/collections/device_sessions/records/${encodeURIComponent(existing.id)}`, {
+          method: 'PATCH',
+          body,
+        });
+      }
+
+      return this.adminRequest('/api/collections/device_sessions/records', {
+        method: 'POST',
+        body: {
+          user_id: userId,
+          device_id: deviceId,
+          ...body,
+          first_seen_at: now,
+          created_at: now,
+        },
+      });
+    } catch (error) {
+      if (error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async listDeviceSessions(userId) {
+    const filter = encodeURIComponent(`user_id = "${escapeFilterValue(userId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/device_sessions/records?filter=${filter}&sort=-last_seen_at&perPage=50`,
+    );
+    return result.items || [];
+  }
+
+  async changePassword(user, currentPassword, newPassword) {
+    if (String(newPassword || '').length < 8) {
+      throw new HttpError(400, 'Password must be at least 8 characters.', {
+        code: 'weak_password',
+      });
+    }
+
+    await this.authenticateUserSmart(user.email || user.username, currentPassword);
+    await this.adminRequest(`/api/collections/users/records/${encodeURIComponent(user.id)}`, {
+      method: 'PATCH',
+      body: {
+        password: newPassword,
+        passwordConfirm: newPassword,
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    const now = new Date().toISOString();
+    const score = getPasswordStrengthScore(newPassword);
+    const existing = await this.getPasswordCredential(user.id).catch(() => null);
+    if (existing) {
+      await this.adminRequest(`/api/collections/password_credentials/records/${encodeURIComponent(existing.id)}`, {
+        method: 'PATCH',
+        body: {
+          changed_at: now,
+          strength_score: score,
+          updated_at: now,
+        },
+      });
+    } else {
+      await this.adminRequest('/api/collections/password_credentials/records', {
+        method: 'POST',
+        body: {
+          user_id: user.id,
+          changed_at: now,
+          strength_score: score,
+          created_at: now,
+          updated_at: now,
+        },
+      });
+    }
+
+    return { changedAt: now, strengthScore: score };
+  }
+
+  async getPasswordCredential(userId) {
+    const filter = encodeURIComponent(`user_id = "${escapeFilterValue(userId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/password_credentials/records?filter=${filter}&perPage=1`,
+    );
+    return result.items?.[0] || null;
+  }
+
+  async getSecurityOverview(user, context) {
+    await Promise.all([
+      this.ensureSecurityPin(user).catch(() => null),
+      this.upsertDeviceSession(user.id, context).catch(() => null),
+    ]);
+
+    const [biometric, twoFactor, devices, passwordCredential] = await Promise.all([
+      this.getBiometricLock(user.id, context).catch(() => null),
+      this.getTwoFactorSettings(user.id).catch(() => null),
+      this.listDeviceSessions(user.id).catch(() => []),
+      this.getPasswordCredential(user.id).catch(() => null),
+    ]);
+
+    return {
+      biometricLock: {
+        enabled: Boolean(biometric?.enabled),
+        devicePlatform: biometric?.device_platform || context.devicePlatform || '',
+        updatedAt: biometric?.updated_at || '',
+      },
+      twoFactor: {
+        enabled: Boolean(twoFactor?.enabled),
+        method: twoFactor?.method || 'app_otp',
+        transferRequired: Boolean(twoFactor?.transfer_required),
+        updatedAt: twoFactor?.updated_at || '',
+      },
+      pin: {
+        configured: Boolean(user.pin_hash),
+      },
+      password: {
+        changedAt: passwordCredential?.changed_at || '',
+        strengthScore: Number(passwordCredential?.strength_score || 0),
+      },
+      devices: devices.map((device) => ({
+        id: device.id,
+        platform: device.device_platform || '',
+        info: device.device_info || '',
+        lastSeenAt: device.last_seen_at || '',
+        isCurrent: device.device_id === getStableDeviceId(context),
+      })),
+    };
   }
 
   async authenticateBearer(token) {
@@ -1438,6 +1749,17 @@ function getChatThreadPreview(type, message, metadata) {
   }
 
   return message.slice(0, 1000);
+}
+
+function getPasswordStrengthScore(password) {
+  const value = String(password || '');
+  let score = 0;
+  if (value.length >= 8) score += 1;
+  if (value.length >= 12) score += 1;
+  if (/[a-z]/.test(value) && /[A-Z]/.test(value)) score += 1;
+  if (/\d/.test(value)) score += 1;
+  if (/[^a-zA-Z0-9]/.test(value)) score += 1;
+  return Math.min(score, 5);
 }
 
 const pocketBase = new PocketBaseClient();

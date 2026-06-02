@@ -61,7 +61,7 @@ async function sendTransfer(req, res) {
     });
   }
 
-  pocketBase.verifyUserPin(sender, body.pin);
+  await pocketBase.verifyUserPin(sender, body.pin);
 
   const receiver = await pocketBase.getUserById(receiverUserId);
   if (!receiver) {
