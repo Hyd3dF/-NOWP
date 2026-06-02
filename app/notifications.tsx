@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   FlatList,
   Image,
+  Linking,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -11,6 +12,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Avatar } from '@/components/ui/Avatar';
 import { colors } from '@/theme/colors';
@@ -58,6 +60,12 @@ export default function NotificationsScreen() {
 
     if (item.type === 'friend_request') {
       router.push('/people/add');
+      return;
+    }
+
+    const safeLink = getSafeExternalUrl(item.linkUrl);
+    if (safeLink) {
+      await Linking.openURL(safeLink);
     }
   };
 
@@ -98,15 +106,42 @@ function NotificationRow({ item, onPress }: { item: AppNotification; onPress: ()
   const isBrandNotification = item.type !== 'friend_request' && item.type !== 'friend_accept';
 
   if (isBrandNotification) {
+    const hasSafeLink = Boolean(getSafeExternalUrl(item.linkUrl));
+
     return (
       <Pressable style={({ pressed }) => [styles.brandCard, pressed && styles.brandCardPressed]} onPress={onPress}>
-        {item.imageUrl ? (
-          <Image source={{ uri: item.imageUrl }} style={styles.brandImage} resizeMode="cover" />
-        ) : (
-          <View style={styles.brandImageFallback}>
-            <Ionicons name={iconName} size={34} color="#FFFFFF" />
+        <View style={styles.brandImageFrame}>
+          {item.imageUrl ? (
+            <Image source={{ uri: item.imageUrl }} style={styles.brandImage} resizeMode="cover" />
+          ) : (
+            <LinearGradient
+              colors={['#6C5CE7', '#4F46E5']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.brandImageFallback}
+            >
+              <Ionicons name={iconName} size={34} color="#FFFFFF" />
+            </LinearGradient>
+          )}
+          <LinearGradient
+            colors={['rgba(0,0,0,0.04)', 'rgba(0,0,0,0.64)']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={styles.brandImageOverlay}
+          />
+          <View style={styles.brandImageTopRow}>
+            <View style={styles.brandPill}>
+              <Text style={styles.brandPillText}>Oroya update</Text>
+            </View>
+            {!item.isRead ? <View style={styles.imageUnreadDot} /> : null}
           </View>
-        )}
+          {hasSafeLink ? (
+            <View style={styles.brandOpenPill}>
+              <Text style={styles.brandOpenText}>Open</Text>
+              <Ionicons name="arrow-forward" size={12} color="#FFFFFF" />
+            </View>
+          ) : null}
+        </View>
 
         <View style={styles.brandContent}>
           <View style={styles.brandTitleLine}>
@@ -163,6 +198,11 @@ function getIconName(item: AppNotification): keyof typeof Ionicons.glyphMap {
   return icon in Ionicons.glyphMap ? (icon as keyof typeof Ionicons.glyphMap) : 'notifications-outline';
 }
 
+function getSafeExternalUrl(value?: string) {
+  const url = String(value || '').trim();
+  return /^https?:\/\/[^\s]+$/i.test(url) ? url : '';
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -201,17 +241,70 @@ const styles = StyleSheet.create({
   brandCardPressed: {
     opacity: 0.82,
   },
+  brandImageFrame: {
+    position: 'relative',
+    height: 178,
+    backgroundColor: colors.light.borderLight,
+  },
   brandImage: {
     width: '100%',
-    height: 156,
+    height: '100%',
     backgroundColor: colors.light.borderLight,
   },
   brandImageFallback: {
     width: '100%',
-    height: 132,
+    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.light.primary,
+  },
+  brandImageOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  brandImageTopRow: {
+    position: 'absolute',
+    top: spacing.md,
+    left: spacing.md,
+    right: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  brandPill: {
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+  },
+  brandPillText: {
+    fontSize: 10,
+    color: colors.light.textPrimary,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  imageUnreadDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: colors.light.error,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  brandOpenPill: {
+    position: 'absolute',
+    right: spacing.md,
+    bottom: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.46)',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+  },
+  brandOpenText: {
+    fontSize: 11,
+    color: '#FFFFFF',
+    fontWeight: '900',
   },
   brandContent: {
     padding: spacing.md,
