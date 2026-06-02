@@ -14,6 +14,7 @@ const PUBLIC_DETAIL_KEYS = new Set([
   'min_amount',
   'currency',
   'network',
+  'external_ingress_denied',
 ]);
 
 function sendJson(res, status, body) {

@@ -103,7 +103,7 @@ function mapWebhookStatus(status) {
 }
 
 function isSuccessfulDepositStatus(status) {
-  return status === 'confirmed' || status === 'completed';
+  return status === 'completed';
 }
 
 function isTerminalFailureStatus(status) {
@@ -284,6 +284,14 @@ async function nowPaymentsWebhook(req, res) {
   }
 
   const transactionReference = intent.reference_id || referenceId || `dep_${paymentId}`;
+  if (paymentId && intent.nowpayments_payment_id && paymentId !== intent.nowpayments_payment_id) {
+    throw new HttpError(400, 'Webhook payment_id does not match the payment intent.');
+  }
+
+  if (referenceId && intent.reference_id && referenceId !== intent.reference_id) {
+    throw new HttpError(400, 'Webhook order_id does not match the payment intent.');
+  }
+
   const existingTransaction = await pocketBase.findTransactionByReference(transactionReference);
 
   await pocketBase.updatePaymentIntent(intent.id, {
@@ -310,7 +318,25 @@ async function nowPaymentsWebhook(req, res) {
   }
 
   if (isSuccessfulDepositStatus(status)) {
-    const amount = Number(intent.amount || body.price_amount || body.actually_paid || 0);
+    const providerPriceAmount = Number(body.price_amount || 0);
+    if (providerPriceAmount && providerPriceAmount + 0.000001 < Number(intent.amount || 0)) {
+      await pocketBase.createAuditLog({
+        userId: intent.user_id,
+        action: 'payments.webhook_underpaid_not_credited',
+        ...requestContext,
+        metadata: {
+          payment_intent_id: intent.id,
+          nowpayments_payment_id: paymentId,
+          reference_id: transactionReference,
+          intent_amount: Number(intent.amount || 0),
+          provider_price_amount: providerPriceAmount,
+        },
+      });
+      sendJson(res, 200, { success: true, received: true, status: 'underpaid_not_credited' });
+      return;
+    }
+
+    const amount = Number(intent.amount || 0);
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new HttpError(400, 'Payment intent amount is invalid.');
     }
@@ -355,17 +381,7 @@ async function nowPaymentsWebhook(req, res) {
     await pocketBase.updatePaymentIntent(intent.id, {
       status: 'completed',
     });
-    await pocketBase.adminRequest(
-      `/api/collections/transactions/records/${encodeURIComponent(transaction.id)}`,
-      {
-        method: 'PATCH',
-        body: {
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-      },
-    );
+    await pocketBase.completeTransaction(transaction);
 
     await pocketBase.createAuditLog({
       userId: intent.user_id,

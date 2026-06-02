@@ -2,6 +2,10 @@ const crypto = require('node:crypto');
 const { HttpError, getBearerToken, getRequestContext, parseJsonBody, sendJson } = require('../http');
 const { pocketBase, sanitizeUser } = require('../pocketbase');
 
+const loginAttempts = new Map();
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 8;
+
 function requireString(body, field) {
   if (typeof body[field] !== 'string' || body[field].trim() === '') {
     throw new HttpError(400, `${field} is required.`);
@@ -131,9 +135,11 @@ async function login(req, res) {
   const identity = requireString(body, 'identity');
   const password = requireString(body, 'password');
   const requestContext = getRequestContext(req);
+  const attemptKey = getLoginAttemptKey(identity, requestContext);
   let countedLoginAttempt = false;
 
   try {
+    assertLoginNotThrottled(attemptKey);
     const auth = await pocketBase.authenticateUserSmart(identity, password);
     const user = auth.record;
 
@@ -155,6 +161,7 @@ async function login(req, res) {
       ...requestContext,
       metadata: { identity_hash: auditHash(identity) },
     });
+    resetLoginAttempts(attemptKey);
 
     sendJson(res, 200, {
       success: true,
@@ -176,6 +183,7 @@ async function login(req, res) {
       },
     });
     if (error.status === 429) throw error;
+    recordLoginFailure(attemptKey);
     throw new HttpError(401, 'Invalid credentials.', { code: 'invalid_credentials' });
   }
 }
@@ -205,6 +213,42 @@ function auditHash(value) {
     .createHash('sha256')
     .update(String(value || '').trim().toLowerCase())
     .digest('hex');
+}
+
+function getLoginAttemptKey(identity, context) {
+  return auditHash(`${identity}|${context.deviceId || ''}|${context.ipAddress || ''}`);
+}
+
+function assertLoginNotThrottled(key) {
+  const attempt = loginAttempts.get(key);
+  if (!attempt) return;
+
+  const now = Date.now();
+  if (attempt.resetAt <= now) {
+    loginAttempts.delete(key);
+    return;
+  }
+
+  if (attempt.count >= LOGIN_MAX_FAILURES) {
+    throw new HttpError(429, 'Too many login attempts. Try again later.', {
+      code: 'login_temporarily_locked',
+    });
+  }
+}
+
+function recordLoginFailure(key) {
+  const now = Date.now();
+  const existing = loginAttempts.get(key);
+  if (!existing || existing.resetAt <= now) {
+    loginAttempts.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+    return;
+  }
+
+  existing.count += 1;
+}
+
+function resetLoginAttempts(key) {
+  loginAttempts.delete(key);
 }
 
 module.exports = {

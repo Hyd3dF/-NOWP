@@ -383,6 +383,7 @@ class PocketBaseClient {
   async verifyUserPin(user, pin) {
     const pinRecord = await this.getSecurityPin(user.id).catch(() => null);
     const storedPinHash = pinRecord?.pin_hash || user?.pin_hash || '';
+    const now = new Date();
 
     if (!storedPinHash) {
       throw new HttpError(403, 'Security PIN is not configured.', {
@@ -390,13 +391,28 @@ class PocketBaseClient {
       });
     }
 
+    if (pinRecord?.locked_until) {
+      const lockedUntil = new Date(pinRecord.locked_until);
+      if (Number.isFinite(lockedUntil.getTime()) && lockedUntil > now) {
+        throw new HttpError(429, 'Security PIN is temporarily locked.', {
+          code: 'pin_temporarily_locked',
+        });
+      }
+    }
+
     if (!/^\d{4}$/.test(String(pin || '')) || !verifySecret(pin, storedPinHash)) {
       if (pinRecord) {
+        const failedAttemptCount = Number(pinRecord.failed_attempt_count || 0) + 1;
+        const shouldLock = failedAttemptCount >= config.security.pinMaxAttempts;
+        const lockedUntil = shouldLock
+          ? new Date(now.getTime() + config.security.pinLockMinutes * 60 * 1000).toISOString()
+          : pinRecord.locked_until || '';
         await this.adminRequest(`/api/collections/security_pins/records/${encodeURIComponent(pinRecord.id)}`, {
           method: 'PATCH',
           body: {
-            failed_attempt_count: Number(pinRecord.failed_attempt_count || 0) + 1,
-            updated_at: new Date().toISOString(),
+            failed_attempt_count: failedAttemptCount,
+            locked_until: lockedUntil,
+            updated_at: now.toISOString(),
           },
         }).catch(() => {});
       }
@@ -410,7 +426,8 @@ class PocketBaseClient {
         method: 'PATCH',
         body: {
           failed_attempt_count: 0,
-          updated_at: new Date().toISOString(),
+          locked_until: '',
+          updated_at: now.toISOString(),
         },
       }).catch(() => {});
     }
@@ -740,7 +757,12 @@ class PocketBaseClient {
     const result = await this.adminRequest(
       `/api/collections/wallets/records?filter=${filter}&sort=currency&perPage=50`,
     );
-    return result.items || [];
+    const wallets = result.items || [];
+    const reconciled = [];
+    for (const wallet of wallets) {
+      reconciled.push(await this.reconcileWalletBalance(wallet, 'wallets.get'));
+    }
+    return reconciled;
   }
 
   async ensureDefaultWallet(userId) {
@@ -814,13 +836,14 @@ class PocketBaseClient {
   }
 
   async updateWalletBalance(wallet, amountDelta) {
-    const currentBalance = Number(wallet.balance || 0);
+    const trustedWallet = await this.reconcileWalletBalance(wallet, 'wallets.deposit_before_update');
+    const currentBalance = Number(trustedWallet.balance || 0);
     const currentDeposited = Number(wallet.total_deposited || 0);
 
     return this.adminRequest(`/api/collections/wallets/records/${encodeURIComponent(wallet.id)}`, {
       method: 'PATCH',
       body: {
-        balance: currentBalance + amountDelta,
+        balance: roundMoney(currentBalance + amountDelta),
         total_deposited: currentDeposited + amountDelta,
         updated_at: new Date().toISOString(),
       },
@@ -828,8 +851,9 @@ class PocketBaseClient {
   }
 
   async updateWalletForInternalTransfer(wallet, amountDelta) {
-    const currentBalance = Number(wallet.balance || 0);
-    const nextBalance = currentBalance + amountDelta;
+    const trustedWallet = await this.reconcileWalletBalance(wallet, 'wallets.transfer_before_update');
+    const currentBalance = Number(trustedWallet.balance || 0);
+    const nextBalance = roundMoney(currentBalance + amountDelta);
 
     if (!Number.isFinite(nextBalance) || nextBalance < 0) {
       throw new HttpError(409, 'Insufficient wallet balance.', {
@@ -844,6 +868,94 @@ class PocketBaseClient {
         updated_at: new Date().toISOString(),
       },
     });
+  }
+
+  async reconcileWalletBalance(wallet, reason = 'wallets.reconcile') {
+    if (!wallet?.id || !wallet.user_id) return wallet;
+
+    const expected = await this.calculateAuthoritativeBalance(wallet.user_id, wallet.currency);
+    const current = roundMoney(Number(wallet.balance || 0));
+    const locked = roundMoney(Number(wallet.locked_balance || 0));
+    if (current === expected && locked >= 0) return wallet;
+
+    const corrected = await this.adminRequest(`/api/collections/wallets/records/${encodeURIComponent(wallet.id)}`, {
+      method: 'PATCH',
+      body: {
+        balance: expected,
+        locked_balance: Math.max(0, locked),
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    await this.createAuditLog({
+      userId: wallet.user_id,
+      action: 'wallets.balance_tamper_corrected',
+      metadata: {
+        wallet_id: wallet.id,
+        currency: wallet.currency,
+        previous_balance: current,
+        corrected_balance: expected,
+        reason,
+      },
+    }).catch(() => {});
+
+    return corrected;
+  }
+
+  async calculateAuthoritativeBalance(userId, currency) {
+    const normalizedCurrency = normalizeCurrency(currency);
+    const filter = encodeURIComponent(
+      `currency = "${escapeFilterValue(normalizedCurrency)}" && status = "completed" && (user_id = "${escapeFilterValue(userId)}" || sender_user_id = "${escapeFilterValue(userId)}" || receiver_user_id = "${escapeFilterValue(userId)}")`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/transactions/records?filter=${filter}&sort=created_at&perPage=500`,
+    );
+
+    let balance = 0;
+    for (const transaction of result.items || []) {
+      if (!this.isTransactionIntegrityTrusted(transaction)) {
+        await this.createAuditLog({
+          userId,
+          action: 'wallets.transaction_tamper_detected',
+          metadata: {
+            transaction_id: transaction.id,
+            reference_id: transaction.reference_id || '',
+            currency: transaction.currency || '',
+          },
+        }).catch(() => {});
+        continue;
+      }
+
+      const amount = roundMoney(Number(transaction.amount || 0));
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+
+      if (transaction.type === 'deposit' && transaction.user_id === userId) {
+        balance = roundMoney(balance + amount);
+      } else if (transaction.type === 'send' && transaction.sender_user_id === userId) {
+        balance = roundMoney(balance - amount);
+      } else if (transaction.type === 'send' && transaction.receiver_user_id === userId) {
+        balance = roundMoney(balance + amount);
+      } else if (transaction.type === 'withdrawal' && transaction.user_id === userId) {
+        balance = roundMoney(balance - amount);
+      }
+    }
+
+    const roundedBalance = roundMoney(balance);
+    if (roundedBalance < 0) {
+      await this.createAuditLog({
+        userId,
+        action: 'wallets.negative_ledger_detected',
+        metadata: {
+          currency: normalizedCurrency,
+          calculated_balance: roundedBalance,
+        },
+      }).catch(() => {});
+      throw new HttpError(409, 'Wallet ledger integrity violation.', {
+        code: 'wallet_ledger_integrity_violation',
+      });
+    }
+
+    return roundedBalance;
   }
 
   async getDailyTransferStats(userId, direction) {
@@ -867,23 +979,20 @@ class PocketBaseClient {
   async createInternalTransferTransaction(input) {
     const now = new Date().toISOString();
 
-    return this.adminRequest('/api/collections/transactions/records', {
-      method: 'POST',
-      body: {
-        user_id: input.senderUserId,
-        type: 'send',
-        amount: input.amount,
-        currency: input.currency,
-        status: 'completed',
-        provider: 'oroya',
-        sender_user_id: input.senderUserId,
-        receiver_user_id: input.receiverUserId,
-        reference_id: input.referenceId,
-        note: input.note || '',
-        created_at: now,
-        completed_at: now,
-        updated_at: now,
-      },
+    return this.createTransactionRecord({
+      user_id: input.senderUserId,
+      type: 'send',
+      amount: input.amount,
+      currency: input.currency,
+      status: 'completed',
+      provider: 'oroya',
+      sender_user_id: input.senderUserId,
+      receiver_user_id: input.receiverUserId,
+      reference_id: input.referenceId,
+      note: input.note || '',
+      created_at: now,
+      completed_at: now,
+      updated_at: now,
     });
   }
 
@@ -967,25 +1076,92 @@ class PocketBaseClient {
   async createDepositTransaction(input) {
     const now = new Date().toISOString();
 
-    return this.adminRequest('/api/collections/transactions/records', {
-      method: 'POST',
-      body: {
-        user_id: input.userId,
-        type: 'deposit',
-        amount: input.amount,
-        currency: input.currency,
-        status: input.status || 'pending',
-        provider: 'nowpayments',
-        provider_payment_id: input.providerPaymentId,
-        wallet_address: input.walletAddress || '',
-        network: input.network || '',
-        reference_id: input.referenceId,
-        note: input.note || '',
-        created_at: now,
-        completed_at: input.completedAt || '',
-        updated_at: now,
-      },
+    return this.createTransactionRecord({
+      user_id: input.userId,
+      type: 'deposit',
+      amount: input.amount,
+      currency: input.currency,
+      status: input.status || 'pending',
+      provider: 'nowpayments',
+      provider_payment_id: input.providerPaymentId,
+      wallet_address: input.walletAddress || '',
+      network: input.network || '',
+      reference_id: input.referenceId,
+      note: input.note || '',
+      created_at: now,
+      completed_at: input.completedAt || '',
+      updated_at: now,
     });
+  }
+
+  async createTransactionRecord(body) {
+    const signedBody = signTransactionBody(body);
+    try {
+      return await this.adminRequest('/api/collections/transactions/records', {
+        method: 'POST',
+        body: signedBody,
+      });
+    } catch (error) {
+      if (!isUnknownFieldError(error, ['integrity_hash', 'integrity_version'])) throw error;
+      if (!config.security.allowUnsignedLedger) {
+        throw new HttpError(500, 'Transaction integrity fields are missing.', {
+          code: 'transaction_integrity_schema_missing',
+        });
+      }
+      return this.adminRequest('/api/collections/transactions/records', {
+        method: 'POST',
+        body,
+      });
+    }
+  }
+
+  async completeTransaction(transaction) {
+    const patch = {
+      status: 'completed',
+      completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const signedBody = signTransactionBody({ ...transaction, ...patch });
+    try {
+      return await this.adminRequest(
+        `/api/collections/transactions/records/${encodeURIComponent(transaction.id)}`,
+        {
+          method: 'PATCH',
+          body: {
+            ...patch,
+            integrity_version: signedBody.integrity_version,
+            integrity_hash: signedBody.integrity_hash,
+          },
+        },
+      );
+    } catch (error) {
+      if (!isUnknownFieldError(error, ['integrity_hash', 'integrity_version'])) throw error;
+      if (!config.security.allowUnsignedLedger) {
+        throw new HttpError(500, 'Transaction integrity fields are missing.', {
+          code: 'transaction_integrity_schema_missing',
+        });
+      }
+      return this.adminRequest(
+        `/api/collections/transactions/records/${encodeURIComponent(transaction.id)}`,
+        {
+          method: 'PATCH',
+          body: patch,
+        },
+      );
+    }
+  }
+
+  isTransactionIntegrityTrusted(transaction) {
+    if (!transaction.integrity_hash) return config.security.allowUnsignedLedger;
+    const expected = getTransactionSignature(transaction);
+    const actual = String(transaction.integrity_hash || '');
+    if (!/^[a-f0-9]{64}$/i.test(actual)) return false;
+    const expectedBuffer = Buffer.from(expected, 'hex');
+    const actualBuffer = Buffer.from(actual, 'hex');
+    return (
+      expectedBuffer.length === actualBuffer.length &&
+      crypto.timingSafeEqual(expectedBuffer, actualBuffer)
+    );
   }
 
   async getTransactionsForUser(userId) {
@@ -1029,6 +1205,32 @@ class PocketBaseClient {
     }
 
     return mapped;
+  }
+
+  async signUnsignedTransactions(limit = 500) {
+    const result = await this.adminRequest(
+      `/api/collections/transactions/records?sort=created_at&perPage=${limit}`,
+    );
+    let signed = 0;
+
+    for (const transaction of result.items || []) {
+      if (transaction.integrity_hash) continue;
+      const signedBody = signTransactionBody(transaction);
+      await this.adminRequest(
+        `/api/collections/transactions/records/${encodeURIComponent(transaction.id)}`,
+        {
+          method: 'PATCH',
+          body: {
+            integrity_version: signedBody.integrity_version,
+            integrity_hash: signedBody.integrity_hash,
+            updated_at: transaction.updated_at || transaction.updated || new Date().toISOString(),
+          },
+        },
+      );
+      signed += 1;
+    }
+
+    return signed;
   }
 
   async getUserById(userId) {
@@ -1624,6 +1826,48 @@ function sanitizeUser(record) {
 
 function normalizeCurrency(currency) {
   return String(currency || config.defaultWalletCurrency).trim().toUpperCase();
+}
+
+function roundMoney(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return 0;
+  return Math.round(amount * 100) / 100;
+}
+
+function signTransactionBody(body) {
+  return {
+    ...body,
+    integrity_version: 'v1',
+    integrity_hash: getTransactionSignature(body),
+  };
+}
+
+function getTransactionSignature(transaction) {
+  const payload = {
+    user_id: transaction.user_id || '',
+    type: transaction.type || '',
+    amount: roundMoney(transaction.amount || 0),
+    currency: normalizeCurrency(transaction.currency),
+    status: transaction.status || '',
+    provider: transaction.provider || '',
+    provider_payment_id: transaction.provider_payment_id || '',
+    provider_payout_id: transaction.provider_payout_id || '',
+    sender_user_id: transaction.sender_user_id || '',
+    receiver_user_id: transaction.receiver_user_id || '',
+    reference_id: transaction.reference_id || '',
+    created_at: transaction.created_at || transaction.created || '',
+    completed_at: transaction.completed_at || '',
+  };
+
+  return crypto
+    .createHmac('sha256', config.security.ledgerSecret)
+    .update(JSON.stringify(payload))
+    .digest('hex');
+}
+
+function isUnknownFieldError(error, fieldNames) {
+  const text = JSON.stringify(error?.details || error?.data || error || {});
+  return fieldNames.some((fieldName) => text.includes(fieldName));
 }
 
 function escapeFilterValue(value) {

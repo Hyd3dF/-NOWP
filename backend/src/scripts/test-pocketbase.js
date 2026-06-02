@@ -24,7 +24,7 @@ main().catch((error) => {
       {
         success: false,
         message: error.message,
-        details: error.details,
+        status: error.status || 500,
       },
       null,
       2,

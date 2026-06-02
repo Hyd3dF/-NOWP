@@ -1,6 +1,11 @@
+const crypto = require('node:crypto');
 const { HttpError, parseJsonBody, sendJson } = require('../http');
 const { config } = require('../config');
 const { pocketBase } = require('../pocketbase');
+
+const adminTokenFailures = new Map();
+const ADMIN_TOKEN_WINDOW_MS = 10 * 60 * 1000;
+const ADMIN_TOKEN_MAX_FAILURES = 8;
 
 function pickString(body, field) {
   return typeof body[field] === 'string' ? body[field].trim() : '';
@@ -14,11 +19,17 @@ function requireAdminNotificationToken(req) {
   }
 
   const provided = String(req.headers['x-oroya-admin-token'] || '').trim();
-  if (provided !== config.admin.notificationToken) {
+  const key = getAdminFailureKey(req);
+  assertAdminTokenNotThrottled(key);
+
+  if (!constantTimeEqual(provided, config.admin.notificationToken)) {
+    recordAdminTokenFailure(key);
     throw new HttpError(401, 'Admin token is invalid.', {
       code: 'admin_token_invalid',
     });
   }
+
+  adminTokenFailures.delete(key);
 }
 
 async function createAdminNotification(req, res) {
@@ -59,3 +70,42 @@ async function createAdminNotification(req, res) {
 module.exports = {
   createAdminNotification,
 };
+
+function constantTimeEqual(a, b) {
+  const left = Buffer.from(crypto.createHash('sha256').update(String(a || '')).digest('hex'));
+  const right = Buffer.from(crypto.createHash('sha256').update(String(b || '')).digest('hex'));
+  return crypto.timingSafeEqual(left, right);
+}
+
+function getAdminFailureKey(req) {
+  const ip = String(req.socket.remoteAddress || '').slice(0, 80);
+  return crypto.createHash('sha256').update(ip).digest('hex');
+}
+
+function assertAdminTokenNotThrottled(key) {
+  const failure = adminTokenFailures.get(key);
+  if (!failure) return;
+
+  const now = Date.now();
+  if (failure.resetAt <= now) {
+    adminTokenFailures.delete(key);
+    return;
+  }
+
+  if (failure.count >= ADMIN_TOKEN_MAX_FAILURES) {
+    throw new HttpError(429, 'Too many admin token attempts.', {
+      code: 'admin_token_temporarily_locked',
+    });
+  }
+}
+
+function recordAdminTokenFailure(key) {
+  const now = Date.now();
+  const existing = adminTokenFailures.get(key);
+  if (!existing || existing.resetAt <= now) {
+    adminTokenFailures.set(key, { count: 1, resetAt: now + ADMIN_TOKEN_WINDOW_MS });
+    return;
+  }
+
+  existing.count += 1;
+}

@@ -5,6 +5,16 @@ function pickString(body, field) {
   return typeof body[field] === 'string' ? body[field].trim() : '';
 }
 
+async function requireSecurityPin(user, body) {
+  const pin = pickString(body, 'pin');
+  if (!/^\d{4}$/.test(pin)) {
+    throw new HttpError(400, 'PIN must be 4 digits.', {
+      code: 'invalid_pin_format',
+    });
+  }
+  await pocketBase.verifyUserPin(user, pin);
+}
+
 async function securityOverview(req, res) {
   const token = getBearerToken(req);
   const user = await pocketBase.authenticateBearer(token);
@@ -30,6 +40,7 @@ async function updateBiometricLock(req, res) {
   const body = await parseJsonBody(req);
   const requestContext = getRequestContext(req);
   const enabled = Boolean(body.enabled);
+  await requireSecurityPin(user, body);
 
   const record = await pocketBase.upsertBiometricLock(user.id, requestContext, enabled);
   await pocketBase.createAuditLog({
@@ -54,6 +65,7 @@ async function updateTwoFactor(req, res) {
   const body = await parseJsonBody(req);
   const requestContext = getRequestContext(req);
   const enabled = Boolean(body.enabled);
+  await requireSecurityPin(user, body);
 
   const record = await pocketBase.upsertTwoFactorSettings(user.id, enabled);
   await pocketBase.createAuditLog({

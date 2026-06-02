@@ -51,6 +51,15 @@ function getExpoLanApiUrl() {
 
 function resolveBaseUrl() {
   const envUrl = process.env.EXPO_PUBLIC_OROYA_API_URL?.trim();
+  const isDevelopment = typeof __DEV__ !== 'undefined' ? __DEV__ : process.env.NODE_ENV !== 'production';
+
+  if (!isDevelopment) {
+    if (!envUrl || !/^https:\/\//i.test(envUrl)) {
+      throw new Error('EXPO_PUBLIC_OROYA_API_URL must be an HTTPS URL in production builds.');
+    }
+    return envUrl;
+  }
+
   const expoLanUrl = getExpoLanApiUrl();
 
   if (

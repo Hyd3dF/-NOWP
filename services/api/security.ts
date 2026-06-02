@@ -33,18 +33,18 @@ export async function fetchSecurityOverview() {
   return response.security;
 }
 
-export async function updateBiometricLock(enabled: boolean) {
+export async function updateBiometricLock(enabled: boolean, pin: string) {
   const response = await api.post<{ success: boolean; biometricLock: SecurityOverview['biometricLock'] }>(
     '/security/biometric-lock',
-    { enabled },
+    { enabled, pin },
   );
   return response.biometricLock;
 }
 
-export async function updateTwoFactor(enabled: boolean) {
+export async function updateTwoFactor(enabled: boolean, pin: string) {
   const response = await api.post<{ success: boolean; twoFactor: SecurityOverview['twoFactor'] }>(
     '/security/two-factor',
-    { enabled },
+    { enabled, pin },
   );
   return response.twoFactor;
 }

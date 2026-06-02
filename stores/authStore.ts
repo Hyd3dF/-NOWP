@@ -8,6 +8,7 @@ import { useSendStore } from './sendStore';
 import { useTransactionStore } from './transactionStore';
 import { useWalletStore } from './walletStore';
 import { useChatStore } from './chatStore';
+import { useDepositStore } from './depositStore';
 import { changeSecurityPin } from '../services/api/security';
 
 interface BackendUser {
@@ -88,6 +89,7 @@ const SECURE_KEYS = {
   PIN: 'oroya_pin',
   BIOMETRICS: 'oroya_biometrics_enabled',
 };
+const PIN_CONFIGURED_VALUE = 'configured';
 
 function mapBackendUser(user: BackendUser): UserProfile {
   const displayName =
@@ -139,6 +141,7 @@ function clearClientSessionState() {
   useFriendStore.getState().clearFriends();
   useChatStore.getState().clearChats();
   useTransactionStore.getState().clearTransactions();
+  useDepositStore.getState().clearPayment();
   useSendStore.getState().reset();
 }
 
@@ -172,7 +175,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await SecureStore.setItemAsync(SECURE_KEYS.USER, JSON.stringify(user));
         set({
           user,
-          pin: pin || '',
+          pin: pin ? PIN_CONFIGURED_VALUE : '',
           isAuthenticated: true,
           biometricsEnabled,
           isInitialized: true,
@@ -255,9 +258,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const user = mapBackendUser(response.user);
       await Promise.all([
         persistSession(user, response.token),
-        SecureStore.setItemAsync(SECURE_KEYS.PIN, input.pin),
+        SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE),
       ]);
-      set({ user, pin: input.pin, isAuthenticated: true, isLoading: false });
+      set({ user, pin: PIN_CONFIGURED_VALUE, isAuthenticated: true, isLoading: false });
     } catch (error) {
       set({ isLoading: false });
       throw error;
@@ -285,26 +288,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   setPin: async (pin: string) => {
     try {
-      await SecureStore.setItemAsync(SECURE_KEYS.PIN, pin);
+      await SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE);
     } catch {
       console.warn('Failed to save PIN securely');
     }
-    set({ pin });
+    set({ pin: PIN_CONFIGURED_VALUE });
   },
 
   changePin: async (currentPin: string, newPin: string) => {
     await changeSecurityPin(currentPin, newPin);
     try {
-      await SecureStore.setItemAsync(SECURE_KEYS.PIN, newPin);
+      await SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE);
     } catch {
       console.warn('Failed to save updated PIN securely');
     }
-    set({ pin: newPin });
+    set({ pin: PIN_CONFIGURED_VALUE });
   },
 
-  verifyPin: (pin: string) => {
-    return get().pin === pin;
-  },
+  verifyPin: () => false,
 
   updateProfile: async (updates: ProfileUpdateInput) => {
     const currentUser = get().user;

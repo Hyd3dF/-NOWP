@@ -122,12 +122,35 @@ function isLocalRequest(req) {
   );
 }
 
+function enforceIngressPolicy(req, url) {
+  if (!config.security.localOnly) return;
+  if (isLocalRequest(req)) return;
+  if (config.security.publicIngressPaths.includes(url.pathname)) return;
+
+  throw new HttpError(403, 'External requests are not allowed.', {
+    code: 'external_ingress_denied',
+  });
+}
+
+function applySecurityHeaders(res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Robots-Tag', 'noindex,nofollow');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+}
+
 async function handleRequest(req, res) {
+  applySecurityHeaders(res);
   if (applyCors(req, res)) return;
 
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  enforceIngressPolicy(req, url);
 
   if (req.method === 'GET' && url.pathname === '/admin/notifications-tool') {
+    if (!config.admin.toolEnabled || process.env.NODE_ENV === 'production') {
+      throw new HttpError(404, 'Endpoint not found.');
+    }
+
     const filePath = path.resolve(__dirname, '..', 'admin', 'notifications.html');
     const html = fs.readFileSync(filePath, 'utf8');
     res.writeHead(200, {
@@ -166,8 +189,8 @@ async function start() {
     });
   });
 
-  server.listen(config.port, () => {
-    console.log(`Oroya backend listening on http://localhost:${config.port}`);
+  server.listen(config.port, config.host, () => {
+    console.log(`Oroya backend listening on http://${config.host}:${config.port}`);
     console.log('Runtime configuration loaded.');
   });
 }

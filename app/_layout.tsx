@@ -18,6 +18,11 @@ export default function RootLayout() {
   const hasAppliedInitialLockRef = React.useRef(false);
   const lastUnlockAtRef = React.useRef(0);
   const rootSegment = segments[0];
+  const shouldHoldSecureData =
+    isInitialized &&
+    isAuthenticated &&
+    biometricsEnabled &&
+    (isAppLocked || !hasAppliedInitialLockRef.current);
 
   useEffect(() => {
     initAuth();
@@ -102,7 +107,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={styles.container}>
       <StatusBar style="dark" />
-      {!isInitialized ? (
+      {!isInitialized || shouldHoldSecureData ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.light.primary} />
         </View>
@@ -120,7 +125,7 @@ export default function RootLayout() {
           <Stack.Screen name="notifications" />
         </Stack>
       )}
-      {isInitialized && isAuthenticated && biometricsEnabled && isAppLocked ? (
+      {shouldHoldSecureData ? (
         <View style={styles.lockOverlay}>
           <View style={styles.lockIcon}>
             <Text style={styles.lockIconText}>O</Text>

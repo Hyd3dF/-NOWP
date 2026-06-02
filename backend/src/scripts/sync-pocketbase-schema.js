@@ -141,6 +141,39 @@ async function ensureFields(collectionName, requiredFields) {
   return updated;
 }
 
+async function ensureIndexes(collectionName, requiredIndexes) {
+  const collection = await getCollection(collectionName);
+  if (!collection) {
+    throw new Error(`Collection not found: ${collectionName}`);
+  }
+
+  const indexes = collection.indexes || [];
+  const existingIndexNames = new Set(indexes.map(getIndexName).filter(Boolean));
+  const missingIndexes = requiredIndexes.filter((index) => {
+    const indexName = getIndexName(index);
+    return indexName ? !existingIndexNames.has(indexName) : !indexes.includes(index);
+  });
+  if (!missingIndexes.length) {
+    console.log(`Indexes already up to date: ${collectionName}`);
+    return collection;
+  }
+
+  const updated = await pocketBase.adminRequest(`/api/collections/${encodeURIComponent(collection.id)}`, {
+    method: 'PATCH',
+    body: {
+      indexes: [...indexes, ...missingIndexes],
+    },
+  });
+
+  console.log(`Updated indexes ${collectionName}: added ${missingIndexes.length}`);
+  return updated;
+}
+
+function getIndexName(indexSql) {
+  const match = String(indexSql || '').match(/CREATE\s+(?:UNIQUE\s+)?INDEX\s+`?([a-zA-Z0-9_:-]+)`?/i);
+  return match?.[1] || '';
+}
+
 async function main() {
   const friendships = await getCollection('friendships');
   if (!friendships) {
@@ -256,6 +289,21 @@ async function main() {
     dateField('created_at'),
     dateField('updated_at'),
   ]);
+
+  await ensureFields('transactions', [
+    textField('integrity_version', { max: 16 }),
+    textField('integrity_hash', { max: 128 }),
+  ]);
+  await ensureIndexes('transactions', [
+    "CREATE UNIQUE INDEX `idx_transactions_reference_id` ON `transactions` (`reference_id`) WHERE `reference_id` != ''",
+  ]);
+  await ensureIndexes('payment_intents', [
+    "CREATE UNIQUE INDEX `idx_payment_intents_reference_id` ON `payment_intents` (`reference_id`) WHERE `reference_id` != ''",
+    "CREATE UNIQUE INDEX `idx_payment_intents_nowpayments_payment_id` ON `payment_intents` (`nowpayments_payment_id`) WHERE `nowpayments_payment_id` != ''",
+  ]);
+
+  const signedTransactions = await pocketBase.signUnsignedTransactions();
+  console.log(`Signed unsigned transaction records: ${signedTransactions}`);
 
   await pocketBase.testConnection();
   console.log('PocketBase schema sync completed safely.');

@@ -6,6 +6,7 @@ import {
   ScrollView,
   Switch,
   Alert,
+  Modal,
   Pressable,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -17,6 +18,7 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
 import { useAuthStore } from '@/stores/authStore';
 import { HeaderBar } from '@/components/shared/HeaderBar';
+import { PinPad } from '@/components/ui/PinPad';
 import {
   fetchSecurityOverview,
   SecurityOverview,
@@ -31,6 +33,11 @@ export default function SecuritySettingsScreen() {
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [isSavingBiometric, setIsSavingBiometric] = useState(false);
   const [isSaving2FA, setIsSaving2FA] = useState(false);
+  const [pinRequest, setPinRequest] = useState<{
+    title: string;
+    resolve: (pin: string | null) => void;
+  } | null>(null);
+  const [pinPadKey, setPinPadKey] = useState(0);
 
   useEffect(() => {
     fetchSecurityOverview()
@@ -46,10 +53,13 @@ export default function SecuritySettingsScreen() {
 
   const handleBiometricsToggle = async (val: boolean) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    const pin = await requestSecurityPin('Confirm Security PIN');
+    if (!pin) return;
+
     if (!val) {
       setIsSavingBiometric(true);
       try {
-        await updateBiometricLock(false);
+        await updateBiometricLock(false, pin);
         await setBiometricsEnabled(false);
       } finally {
         setIsSavingBiometric(false);
@@ -79,7 +89,7 @@ export default function SecuritySettingsScreen() {
       if (result.success) {
         setIsSavingBiometric(true);
         try {
-          await updateBiometricLock(true);
+          await updateBiometricLock(true, pin);
           await setBiometricsEnabled(true);
         } finally {
           setIsSavingBiometric(false);
@@ -102,11 +112,14 @@ export default function SecuritySettingsScreen() {
 
   const handle2FAToggle = async (val: boolean) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    const pin = await requestSecurityPin('Confirm Security PIN');
+    if (!pin) return;
+
     const previous = twoFactorEnabled;
     setTwoFactorEnabled(val);
     setIsSaving2FA(true);
     try {
-      const updated = await updateTwoFactor(val);
+      const updated = await updateTwoFactor(val, pin);
       setTwoFactorEnabled(updated.enabled);
       if (val) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -125,6 +138,19 @@ export default function SecuritySettingsScreen() {
     if (val) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     }
+  };
+
+  const requestSecurityPin = (title: string) => {
+    setPinPadKey((key) => key + 1);
+    return new Promise<string | null>((resolve) => {
+      setPinRequest({ title, resolve });
+    });
+  };
+
+  const closePinPrompt = (pin: string | null) => {
+    const request = pinRequest;
+    setPinRequest(null);
+    request?.resolve(pin);
   };
 
   return (
@@ -227,6 +253,22 @@ export default function SecuritySettingsScreen() {
           <Text style={styles.badgeText}>This Device</Text>
         </View>
       </ScrollView>
+
+      <Modal visible={Boolean(pinRequest)} transparent animationType="fade">
+        <View style={styles.pinOverlay}>
+          <View style={styles.pinSheet}>
+            <Text style={styles.pinTitle}>{pinRequest?.title}</Text>
+            <PinPad
+              key={pinPadKey}
+              onComplete={(pin) => closePinPrompt(pin)}
+              error=""
+            />
+            <Pressable style={styles.pinCancelButton} onPress={() => closePinPrompt(null)}>
+              <Text style={styles.pinCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -286,5 +328,36 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.sm,
     fontWeight: '700',
     overflow: 'hidden',
+  },
+  pinOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xl,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+  },
+  pinSheet: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: borderRadius.lg,
+    padding: spacing.xl,
+    backgroundColor: colors.light.surface,
+  },
+  pinTitle: {
+    ...typography.h3,
+    color: colors.light.textPrimary,
+    textAlign: 'center',
+    marginBottom: spacing.lg,
+  },
+  pinCancelButton: {
+    alignSelf: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    marginTop: spacing.md,
+  },
+  pinCancelText: {
+    ...typography.bodySm,
+    color: colors.light.textSecondary,
+    fontWeight: '700',
   },
 });
