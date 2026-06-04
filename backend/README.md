@@ -60,7 +60,7 @@ called out in `SECURITY_AUDIT_PLAN.md`:
 | POST | `/auth/logout` | Revokes the current `device_token`. |
 | POST | `/auth/sessions/revoke` | Revokes all sessions for the caller. |
 | GET  | `/users/me` | Authenticated. |
-| POST | `/users/me/update` | Authenticated. |
+| POST | `/users/me/update` | Authenticated. Phone/username changes require the current device token plus security PIN. |
 | GET  | `/users/payment-profile` | Authenticated. |
 | GET  | `/wallets/me` | Authenticated. |
 | GET  | `/friends`, `/friends/requests` | Authenticated. |
@@ -73,7 +73,7 @@ called out in `SECURITY_AUDIT_PLAN.md`:
 | GET  | `/payments/currencies` | Authenticated. |
 | POST | `/payments/create-deposit` | Authenticated + device token. |
 | POST | `/payments/nowpayments-webhook` | Public, HMAC-verified, replay-protected, IP-allowlisted, rate-limited. |
-| POST | `/transfers/two-factor/challenge` | Issues a 2FA challenge (ticket + OTP) for high-value transfers. |
+| POST | `/transfers/two-factor/challenge` | Issues a transfer step-up challenge ticket for Firebase PNV verification. |
 | POST | `/transfers/send` | Authenticated + device token, optimistic lock, 2FA-gated, rate-limited. |
 | GET  | `/transactions/me` | Authenticated. |
 
@@ -197,3 +197,21 @@ can rotate. The recommended approach is:
 Production recommendation: set `NOWPAYMENTS_IPN_ALLOWED_IPS=<your-edge-proxy-ips>`
 and keep `NOWPAYMENTS_IPN_ALLOW_PRIVATE=false` so only your edge can hit the
 webhook.
+
+## Firebase PNV client build
+
+Firebase Phone Number Verification requires Android native code and a Firebase
+Android configuration file. Expo Go does not include this app's native module,
+so PNV cannot work there. Build with `npx expo prebuild --platform android` or
+EAS Android so `../plugins/withFirebasePnv.js` can inject the native bridge and
+the `com.google.firebase:firebase-pnv:16.0.0-beta01` dependency. See
+`DEPLOYMENT_RUNBOOK.md` for the required `google-services.json`, privacy-policy
+URL, and backend Firebase environment variables.
+
+## NOWPayments production startup guard
+
+Production startup rejects an empty `NOWPAYMENTS_IPN_ALLOWED_IPS`. This keeps a
+deployment from silently denying every IPN webhook. Set the variable to the
+trusted ingress/proxy IPs that forward webhook traffic to the backend, keep
+`NOWPAYMENTS_IPN_ALLOW_PRIVATE=false`, and continue relying on HMAC signature,
+timestamp, nonce replay protection, and idempotent credit claims.

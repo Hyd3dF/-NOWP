@@ -131,6 +131,39 @@ function leftPad32(value) {
   return Buffer.concat([Buffer.alloc(32 - value.length), value]);
 }
 
+function makeDeviceAuthHeaders(userId = 'u1', token = 'bearer-token') {
+  const context = {
+    deviceId: 'device-test-12345678',
+    devicePlatform: 'android',
+    deviceInfo: 'OroyaTest/1.0',
+  };
+  const issued = issueDeviceToken({
+    userId,
+    fingerprint: buildDeviceFingerprint(context),
+  });
+  return {
+    headers: {
+      authorization: `Bearer ${token}`,
+      'user-agent': context.deviceInfo,
+      'x-oroya-device-id': context.deviceId,
+      'x-oroya-client-platform': context.devicePlatform,
+      'x-oroya-device-token': issued.token,
+    },
+    tokenHash: issued.tokenHash,
+  };
+}
+
+function mockRateLimitAdminRequest() {
+  return async (url, options = {}) => {
+    if (String(url).includes('/api/collections/rate_limit_buckets/records')) {
+      if (options.method === 'POST') return { id: 'rate_bucket' };
+      if (options.method === 'PATCH') return { id: 'rate_bucket' };
+      return { items: [] };
+    }
+    throw new Error(`Unexpected adminRequest in test: ${url}`);
+  };
+}
+
 describe('K-7: webhook HMAC is verified on raw request bytes', () => {
   test('raw JSON body with single-quote key order is accepted', async () => {
     const bodyObject = { b: 1, a: 2 };
@@ -587,6 +620,118 @@ describe('K-6: webhook uses atomic claim on payment_intents', () => {
     assert.match(source, /claimPaymentIntentCredit/);
     assert.match(source, /markTransactionCreditApplied/);
   });
+
+  test('NOWPayments webhook credits a deposit through idempotent claim flow', async () => {
+    const { config } = require('../src/config');
+    const { pocketBase } = require('../src/pocketbase');
+    const { nowPaymentsWebhook } = require('../src/routes/payments');
+    const previousAllowPrivate = config.nowPayments.ipnAllowPrivateNetwork;
+    const previousAllowedIps = config.nowPayments.ipnAllowedIps;
+    const previousSecret = config.nowPayments.ipnSecretKey;
+    const calls = [];
+    const originals = {
+      adminRequest: pocketBase.adminRequest,
+      findPaymentIntent: pocketBase.findPaymentIntent,
+      claimPaymentIntentCredit: pocketBase.claimPaymentIntentCredit,
+      findTransactionByReference: pocketBase.findTransactionByReference,
+      createDepositTransaction: pocketBase.createDepositTransaction,
+      completeTransaction: pocketBase.completeTransaction,
+      markTransactionCreditApplied: pocketBase.markTransactionCreditApplied,
+      ensureWallet: pocketBase.ensureWallet,
+      getWalletById: pocketBase.getWalletById,
+      reconcileWalletBalance: pocketBase.reconcileWalletBalance,
+      updatePaymentIntent: pocketBase.updatePaymentIntent,
+      createAuditLog: pocketBase.createAuditLog,
+    };
+    try {
+      config.nowPayments.ipnAllowPrivateNetwork = true;
+      config.nowPayments.ipnAllowedIps = [];
+      config.nowPayments.ipnSecretKey = TEST_IPN_SECRET;
+      const rateLimitAdminRequest = mockRateLimitAdminRequest();
+      pocketBase.adminRequest = async (url, options = {}) => {
+        if (String(url).includes('/api/collections/webhook_nonces/records')) {
+          return { id: 'nonce_1', ...options.body };
+        }
+        return rateLimitAdminRequest(url, options);
+      };
+      pocketBase.findPaymentIntent = async () => ({
+        id: 'intent_1',
+        user_id: 'u1',
+        amount: 25,
+        currency: 'USD',
+        reference_id: 'dep_ref_1',
+        nowpayments_payment_id: 'np_1',
+        payment_address: 'wallet-address',
+        network: 'btc',
+        credit_applied_at: '',
+      });
+      pocketBase.claimPaymentIntentCredit = async (intentId) => {
+        calls.push(['claim', intentId]);
+        return { claimed: true };
+      };
+      pocketBase.findTransactionByReference = async () => null;
+      pocketBase.createDepositTransaction = async (input) => {
+        calls.push(['create_transaction', input.referenceId]);
+        return { id: 'tx_dep_1', status: 'pending', reference_id: input.referenceId };
+      };
+      pocketBase.completeTransaction = async (transaction) => {
+        calls.push(['complete_transaction', transaction.id]);
+        return { ...transaction, status: 'completed' };
+      };
+      pocketBase.markTransactionCreditApplied = async (transactionId) => {
+        calls.push(['mark_credit', transactionId]);
+      };
+      pocketBase.ensureWallet = async () => ({ id: 'wallet_1', balance: 0 });
+      pocketBase.getWalletById = async () => ({ id: 'wallet_1', balance: 0 });
+      pocketBase.reconcileWalletBalance = async (wallet) => {
+        calls.push(['reconcile_wallet', wallet.id]);
+        return { ...wallet, balance: 25 };
+      };
+      pocketBase.updatePaymentIntent = async (intentId, patch) => {
+        calls.push(['update_intent', intentId, patch.status]);
+      };
+      pocketBase.createAuditLog = async () => ({ id: 'audit' });
+
+      const body = {
+        payment_id: 'np_1',
+        order_id: 'dep_ref_1',
+        payment_status: 'finished',
+        price_amount: 25,
+        actually_paid: 25,
+        timestamp: Math.floor(Date.now() / 1000),
+        nonce: 'nonce_runtime_deposit_1',
+      };
+      const raw = Buffer.from(JSON.stringify(body), 'utf8');
+      const signature = computeNowPaymentsSignature(raw, TEST_IPN_SECRET);
+      const res = makeJsonRes();
+      await nowPaymentsWebhook(
+        makeHttpReq({
+          method: 'POST',
+          url: '/payments/nowpayments-webhook',
+          headers: { 'x-nowpayments-sig': signature },
+          body,
+          remoteAddress: '127.0.0.1',
+        }),
+        res,
+      );
+
+      assert.equal(res.statusCode, 200);
+      assert.equal(JSON.parse(res.body).status, 'completed');
+      assert.deepEqual(calls.map((call) => call[0]), [
+        'claim',
+        'create_transaction',
+        'complete_transaction',
+        'mark_credit',
+        'reconcile_wallet',
+        'update_intent',
+      ]);
+    } finally {
+      config.nowPayments.ipnAllowPrivateNetwork = previousAllowPrivate;
+      config.nowPayments.ipnAllowedIps = previousAllowedIps;
+      config.nowPayments.ipnSecretKey = previousSecret;
+      Object.assign(pocketBase, originals);
+    }
+  });
 });
 
 describe('K-8: persistent rate limit module', () => {
@@ -755,6 +900,7 @@ describe('YP-5: production refuses OROYA_LEDGER_ALLOW_UNSIGNED', () => {
       OROYA_TRANSFER_2FA_SECRET: process.env.OROYA_TRANSFER_2FA_SECRET,
       TWO_FACTOR_HMAC_SECRET: process.env.TWO_FACTOR_HMAC_SECRET,
       NOWPAYMENTS_IPN_ALLOW_PRIVATE: process.env.NOWPAYMENTS_IPN_ALLOW_PRIVATE,
+      NOWPAYMENTS_IPN_ALLOWED_IPS: process.env.NOWPAYMENTS_IPN_ALLOWED_IPS,
     };
     process.env.NODE_ENV = 'production';
     process.env.POCKETBASE_SUPERUSER_PASSWORD = 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^';
@@ -765,6 +911,7 @@ describe('YP-5: production refuses OROYA_LEDGER_ALLOW_UNSIGNED', () => {
     process.env.OROYA_TRANSFER_2FA_SECRET = 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^';
     process.env.TWO_FACTOR_HMAC_SECRET = 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^';
     process.env.NOWPAYMENTS_IPN_ALLOW_PRIVATE = 'false';
+    process.env.NOWPAYMENTS_IPN_ALLOWED_IPS = '203.0.113.10';
     try {
       delete require.cache[require.resolve('../src/config')];
       const reloaded = require('../src/config');
@@ -956,6 +1103,100 @@ describe('Payment idempotency', () => {
   });
 });
 
+describe('/users/me/update sensitive profile step-up', () => {
+  test('phone changes require current device token and security PIN', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const { updateMe } = require('../src/routes/users');
+    const currentUser = {
+      id: 'u1',
+      email: 'u1@example.com',
+      phone: '+905551110000',
+      username: 'oldname',
+    };
+    const originals = {
+      authenticateBearer: pocketBase.authenticateBearer,
+      findDeviceTokenByHash: pocketBase.findDeviceTokenByHash,
+      verifyUserPin: pocketBase.verifyUserPin,
+      updateUserProfile: pocketBase.updateUserProfile,
+      createAuditLog: pocketBase.createAuditLog,
+    };
+    let updateCalls = 0;
+    const { headers, tokenHash } = makeDeviceAuthHeaders('u1');
+    try {
+      pocketBase.authenticateBearer = async () => currentUser;
+      pocketBase.findDeviceTokenByHash = async (hash) => {
+        assert.equal(hash, tokenHash);
+        return { id: 'device_token_record', revoked_at: '' };
+      };
+      pocketBase.verifyUserPin = async (_user, pin) => {
+        assert.equal(pin, '1234');
+      };
+      pocketBase.updateUserProfile = async (userId, input) => {
+        updateCalls += 1;
+        return { ...currentUser, id: userId, ...input };
+      };
+      pocketBase.createAuditLog = async () => ({ id: 'audit' });
+
+      await assert.rejects(
+        updateMe(
+          makeHttpReq({
+            method: 'POST',
+            url: '/users/me/update',
+            headers: { authorization: 'Bearer bearer-token' },
+            body: {
+              display_name: 'User One',
+              username: 'oldname',
+              phone: '+905551119999',
+            },
+          }),
+          makeJsonRes(),
+        ),
+        (error) => error.details?.code === 'device_token_required',
+      );
+      assert.equal(updateCalls, 0);
+
+      await assert.rejects(
+        updateMe(
+          makeHttpReq({
+            method: 'POST',
+            url: '/users/me/update',
+            headers,
+            body: {
+              display_name: 'User One',
+              username: 'oldname',
+              phone: '+905551119999',
+            },
+          }),
+          makeJsonRes(),
+        ),
+        (error) => error.details?.code === 'profile_step_up_required',
+      );
+      assert.equal(updateCalls, 0);
+
+      const res = makeJsonRes();
+      await updateMe(
+        makeHttpReq({
+          method: 'POST',
+          url: '/users/me/update',
+          headers,
+          body: {
+            display_name: 'User One',
+            username: 'oldname',
+            phone: '+905551119999',
+            pin: '1234',
+          },
+        }),
+        res,
+      );
+      assert.equal(res.statusCode, 200);
+      assert.equal(updateCalls, 1);
+      assert.equal(JSON.parse(res.body).user.phone, '+905551119999');
+    } finally {
+      Object.assign(pocketBase, originals);
+    }
+  });
+});
+
 function requireFreshRoute() {
   delete require.cache[require.resolve('../src/routes/payments')];
   return require('../src/routes/payments');
@@ -1105,6 +1346,179 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
       () => __testables.requireIdempotencyKey({ headers: {} }, {}),
       /idempotency key is required/i,
     );
+  });
+
+  test('sendTransfer rejects a real request when Firebase PNV token is missing', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const { sendTransfer } = require('../src/routes/transfers');
+    const { headers, tokenHash } = makeDeviceAuthHeaders('sender', 'transfer-bearer');
+    const originals = {
+      adminRequest: pocketBase.adminRequest,
+      authenticateBearer: pocketBase.authenticateBearer,
+      findDeviceTokenByHash: pocketBase.findDeviceTokenByHash,
+      getUserById: pocketBase.getUserById,
+      getWallets: pocketBase.getWallets,
+      findTransactionByReference: pocketBase.findTransactionByReference,
+      verifyUserPin: pocketBase.verifyUserPin,
+      applyInternalTransferWithLock: pocketBase.applyInternalTransferWithLock,
+    };
+    let appliedTransfer = false;
+    try {
+      pocketBase.adminRequest = mockRateLimitAdminRequest();
+      pocketBase.authenticateBearer = async () => ({
+        id: 'sender',
+        phone: '+905551112233',
+        daily_send_limit: 1000,
+        daily_send_count_limit: 10,
+      });
+      pocketBase.findDeviceTokenByHash = async (hash) => {
+        assert.equal(hash, tokenHash);
+        return { id: 'dt_sender', revoked_at: '' };
+      };
+      pocketBase.getUserById = async () => ({
+        id: 'receiver',
+        daily_receive_limit: 1000,
+        daily_receive_count_limit: 10,
+      });
+      pocketBase.getWallets = async () => [{ id: 'receiver_usd', currency: 'USD' }];
+      pocketBase.findTransactionByReference = async () => null;
+      pocketBase.verifyUserPin = async () => true;
+      pocketBase.applyInternalTransferWithLock = async () => {
+        appliedTransfer = true;
+      };
+
+      await assert.rejects(
+        sendTransfer(
+          makeHttpReq({
+            method: 'POST',
+            url: '/transfers/send',
+            headers: { ...headers, 'x-idempotency-key': 'tr_missing_pnv_123456' },
+            body: {
+              receiver_user_id: 'receiver',
+              amount: 10,
+              currency: 'USD',
+              pin: '1234',
+            },
+          }),
+          makeJsonRes(),
+        ),
+        (error) => error.details?.code === 'two_factor_required',
+      );
+      assert.equal(appliedTransfer, false);
+    } finally {
+      Object.assign(pocketBase, originals);
+    }
+  });
+
+  test('sendTransfer completes with a valid challenge ticket and Firebase PNV token', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const {
+      sendTransfer,
+      startTransferTwoFactorChallenge,
+    } = require('../src/routes/transfers');
+    const { __setJwksForTests } = require('../src/firebasePnv');
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', {
+      namedCurve: 'prime256v1',
+    });
+    const jwk = publicKey.export({ format: 'jwk' });
+    jwk.kid = 'transfer-pnv-key';
+    jwk.alg = 'ES256';
+    jwk.use = 'sig';
+    __setJwksForTests([jwk]);
+    const firebasePnvToken = signEs256Jwt(
+      { typ: 'JWT', alg: 'ES256', kid: jwk.kid },
+      {
+        iss: 'https://fpnv.googleapis.com/projects/123456789',
+        aud: 'https://fpnv.googleapis.com/projects/123456789',
+        sub: '+905551112233',
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 300,
+      },
+      privateKey,
+    );
+
+    const { headers, tokenHash } = makeDeviceAuthHeaders('sender', 'transfer-bearer');
+    const originals = {
+      adminRequest: pocketBase.adminRequest,
+      authenticateBearer: pocketBase.authenticateBearer,
+      findDeviceTokenByHash: pocketBase.findDeviceTokenByHash,
+      getUserById: pocketBase.getUserById,
+      getWallets: pocketBase.getWallets,
+      findTransactionByReference: pocketBase.findTransactionByReference,
+      verifyUserPin: pocketBase.verifyUserPin,
+      getDailyTransferStats: pocketBase.getDailyTransferStats,
+      applyInternalTransferWithLock: pocketBase.applyInternalTransferWithLock,
+      touchDeviceToken: pocketBase.touchDeviceToken,
+      createAuditLog: pocketBase.createAuditLog,
+    };
+    try {
+      pocketBase.adminRequest = mockRateLimitAdminRequest();
+      pocketBase.authenticateBearer = async () => ({
+        id: 'sender',
+        phone: '+90 555 111 22 33',
+        daily_send_limit: 1000,
+        daily_send_count_limit: 10,
+      });
+      pocketBase.findDeviceTokenByHash = async (hash) => {
+        assert.equal(hash, tokenHash);
+        return { id: 'dt_sender', revoked_at: '' };
+      };
+      pocketBase.getUserById = async () => ({
+        id: 'receiver',
+        daily_receive_limit: 1000,
+        daily_receive_count_limit: 10,
+      });
+      pocketBase.getWallets = async () => [{ id: 'receiver_usd', currency: 'USD' }];
+      pocketBase.findTransactionByReference = async () => null;
+      pocketBase.verifyUserPin = async () => true;
+      pocketBase.getDailyTransferStats = async () => ({ amount: 0, count: 0 });
+      pocketBase.applyInternalTransferWithLock = async ({ referenceId }) => ({
+        transaction: {
+          id: 'tx_pnv_success',
+          status: 'completed',
+          reference_id: referenceId,
+          created_at: '2026-06-05T00:00:00.000Z',
+        },
+      });
+      pocketBase.touchDeviceToken = async () => ({ id: 'dt_sender' });
+      pocketBase.createAuditLog = async () => ({ id: 'audit' });
+
+      const challengeRes = makeJsonRes();
+      await startTransferTwoFactorChallenge(
+        makeHttpReq({
+          method: 'POST',
+          url: '/transfers/two-factor/challenge',
+          headers: { authorization: 'Bearer transfer-bearer' },
+          body: { receiver_user_id: 'receiver', amount: 10, currency: 'USD' },
+        }),
+        challengeRes,
+      );
+      const challenge = JSON.parse(challengeRes.body);
+      assert.equal(challenge.two_factor_method, 'firebase_pnv');
+      assert.ok(challenge.ticket);
+
+      const sendRes = makeJsonRes();
+      await sendTransfer(
+        makeHttpReq({
+          method: 'POST',
+          url: '/transfers/send',
+          headers: { ...headers, 'x-idempotency-key': 'tr_valid_pnv_123456' },
+          body: {
+            receiver_user_id: 'receiver',
+            amount: 10,
+            currency: 'USD',
+            pin: '1234',
+            two_factor_ticket: challenge.ticket,
+            firebase_pnv_token: firebasePnvToken,
+          },
+        }),
+        sendRes,
+      );
+      assert.equal(sendRes.statusCode, 201);
+      assert.equal(JSON.parse(sendRes.body).transaction.id, 'tx_pnv_success');
+    } finally {
+      Object.assign(pocketBase, originals);
+    }
   });
 });
 
@@ -1528,6 +1942,71 @@ describe('Security route: password change revokes old sessions', () => {
       Object.assign(pocketBase, originals);
     }
   });
+
+  test('old bearer token is rejected by a protected endpoint after password change', async () => {
+    const { HttpError } = require('../src/http');
+    const { pocketBase } = require('../src/pocketbase');
+    const { changePassword } = require('../src/routes/security');
+    const { me } = require('../src/routes/users');
+    const oldToken = 'old.jwt.token';
+    const revokedTokens = new Set();
+    let userSessionRevoked = false;
+    const originals = {
+      authenticateBearer: pocketBase.authenticateBearer,
+      changePassword: pocketBase.changePassword,
+      revokeAllDeviceTokensForUser: pocketBase.revokeAllDeviceTokensForUser,
+      revokeBearerTokensForUser: pocketBase.revokeBearerTokensForUser,
+      revokeBearerToken: pocketBase.revokeBearerToken,
+      createAuditLog: pocketBase.createAuditLog,
+      ensurePaymentProfile: pocketBase.ensurePaymentProfile,
+    };
+    try {
+      pocketBase.authenticateBearer = async (token) => {
+        if (revokedTokens.has(token) || userSessionRevoked) {
+          throw new HttpError(401, 'Authorization token has been revoked.', {
+            code: 'token_revoked',
+          });
+        }
+        return { id: 'u1', email: 'u1@example.com' };
+      };
+      pocketBase.changePassword = async () => ({ changedAt: 'now', strengthScore: 5 });
+      pocketBase.revokeAllDeviceTokensForUser = async () => ({ revoked: true });
+      pocketBase.revokeBearerTokensForUser = async () => {
+        userSessionRevoked = true;
+      };
+      pocketBase.revokeBearerToken = async (token) => {
+        revokedTokens.add(token);
+      };
+      pocketBase.createAuditLog = async () => ({ id: 'audit' });
+      pocketBase.ensurePaymentProfile = async () => ({ id: 'profile' });
+
+      const res = makeJsonRes();
+      await changePassword(
+        makeHttpReq({
+          method: 'POST',
+          url: '/security/change-password',
+          headers: { authorization: `Bearer ${oldToken}` },
+          body: { current_password: 'old-password', new_password: 'NewPassword!123' },
+        }),
+        res,
+      );
+      assert.equal(res.statusCode, 200);
+
+      await assert.rejects(
+        me(
+          makeHttpReq({
+            method: 'GET',
+            url: '/users/me',
+            headers: { authorization: `Bearer ${oldToken}` },
+          }),
+          makeJsonRes(),
+        ),
+        (error) => error.details?.code === 'token_revoked',
+      );
+    } finally {
+      Object.assign(pocketBase, originals);
+    }
+  });
 });
 
 describe('Production env validation rejects weak secrets', () => {
@@ -1541,6 +2020,7 @@ describe('Production env validation rejects weak secrets', () => {
     NOWPAYMENTS_IPN_SECRET_KEY: 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^',
     OROYA_ADMIN_NOTIFICATION_TOKEN: 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^',
     NOWPAYMENTS_IPN_ALLOW_PRIVATE: 'false',
+    NOWPAYMENTS_IPN_ALLOWED_IPS: '203.0.113.10',
   };
   const previous = {};
 
@@ -1603,6 +2083,18 @@ describe('Production env validation rejects weak secrets', () => {
     applyEnv();
     try {
       assert.doesNotThrow(() => require('../src/config'));
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  test('rejects production NOWPayments IPN without trusted ingress IPs', () => {
+    applyEnv({ NOWPAYMENTS_IPN_ALLOWED_IPS: '' });
+    try {
+      assert.throws(
+        () => require('../src/config'),
+        /NOWPAYMENTS_IPN_ALLOWED_IPS must list your trusted webhook ingress/,
+      );
     } finally {
       restoreEnv();
     }

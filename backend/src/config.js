@@ -202,6 +202,12 @@ function validateProductionConfig(runtimeConfig) {
   if (runtimeConfig.nowPayments.ipnAllowPrivateNetwork) {
     throw new Error('NOWPAYMENTS_IPN_ALLOW_PRIVATE=true is forbidden in production.');
   }
+
+  if (!runtimeConfig.nowPayments.ipnAllowedIps.length) {
+    throw new Error(
+      'NOWPAYMENTS_IPN_ALLOWED_IPS must list your trusted webhook ingress/proxy IPs in production.',
+    );
+  }
 }
 
 function isStrongSecret(value) {

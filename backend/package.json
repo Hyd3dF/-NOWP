@@ -4,9 +4,11 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
+    "prestart": "node src/scripts/ensure-local-secrets.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "check": "node --check src/server.js && node --check src/config.js && node --check src/http.js && node --check src/logger.js && node --check src/pocketbase.js && node --check src/nowpayments.js && node --check src/deviceToken.js && node --check src/firebasePnv.js && node --check src/rateLimit.js && node --check src/webhookSignature.js && node --check src/routes/adminNotifications.js && node --check src/routes/auth.js && node --check src/routes/chats.js && node --check src/routes/friends.js && node --check src/routes/notifications.js && node --check src/routes/payments.js && node --check src/routes/security.js && node --check src/routes/transactions.js && node --check src/routes/transfers.js && node --check src/routes/users.js && node --check src/routes/wallets.js && node --check src/scripts/test-pocketbase.js && node --check src/scripts/sync-pocketbase-schema.js && node --check src/scripts/reconcile-pending-deposits.js && node --check src/scripts/purge-audit-logs.js",
+    "check": "node --check src/server.js && node --check src/config.js && node --check src/http.js && node --check src/logger.js && node --check src/pocketbase.js && node --check src/nowpayments.js && node --check src/deviceToken.js && node --check src/firebasePnv.js && node --check src/rateLimit.js && node --check src/webhookSignature.js && node --check src/routes/adminNotifications.js && node --check src/routes/auth.js && node --check src/routes/chats.js && node --check src/routes/friends.js && node --check src/routes/notifications.js && node --check src/routes/payments.js && node --check src/routes/security.js && node --check src/routes/transactions.js && node --check src/routes/transfers.js && node --check src/routes/users.js && node --check src/routes/wallets.js && node --check src/scripts/test-pocketbase.js && node --check src/scripts/ensure-local-secrets.js && node --check src/scripts/sync-pocketbase-schema.js && node --check src/scripts/reconcile-pending-deposits.js && node --check src/scripts/purge-audit-logs.js",
+    "secrets:ensure": "node src/scripts/ensure-local-secrets.js",
     "schema:sync": "node src/scripts/sync-pocketbase-schema.js",
     "reconcile:deposits": "node src/scripts/reconcile-pending-deposits.js",
     "audit:purge": "node src/scripts/purge-audit-logs.js",
