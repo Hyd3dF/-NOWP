@@ -4,14 +4,13 @@ const { HttpError, getBearerToken, getRequestContext, parseJsonBody, sendJson } 
 const { pocketBase } = require('../pocketbase');
 const { enforceRateLimit } = require('../rateLimit');
 const { verifyDeviceToken } = require('../deviceToken');
+const { phoneNumbersMatch, verifyFirebasePnvToken } = require('../firebasePnv');
 
 const transferLocks = new Map();
 const TRANSFER_MAX_PER_MIN = 30;
 const TRANSFER_AMOUNT_UPPER_BOUND = 1000000;
 const TRANSFER_MIN_CENTS = 1;
 const TRANSFER_2FA_TTL_MS = 5 * 60 * 1000;
-const TRANSFER_2FA_MAX_FAILED = 5;
-const TRANSFER_2FA_TICKET_TTL_MS = 2 * 60 * 1000;
 
 function parseAmount(value) {
   const amount = Number(value);
@@ -196,8 +195,13 @@ async function sendTransfer(req, res) {
 
   if (await isTwoFactorRequiredForTransfer(sender, amount)) {
     const ticket = String(body.two_factor_ticket || '').trim();
-    const code = String(body.two_factor_code || '').trim();
-    if (!ticket || !code) {
+    const firebasePnvToken = String(
+      body.firebase_pnv_token ||
+        body.firebasePhoneVerificationToken ||
+        body.phone_verification_token ||
+        '',
+    ).trim();
+    if (!ticket || !firebasePnvToken) {
       throw new HttpError(401, 'Two-factor authentication is required for this transfer.', {
         code: 'two_factor_required',
       });
@@ -213,21 +217,21 @@ async function sendTransfer(req, res) {
         code: 'two_factor_ticket_invalid',
       });
     }
-    const codeHash = hashOtpCode(code, sender.id);
-    const consumption = await pocketBase.consumeTwoFactorOtp(sender.id, 'transfer', codeHash);
-    if (!consumption.ok) {
+    const firebaseVerification = await verifyFirebasePnvToken(firebasePnvToken);
+    if (!phoneNumbersMatch(firebaseVerification.phoneNumber, sender.phone)) {
       await pocketBase.createAuditLog({
         userId: sender.id,
-        action: 'transfers.two_factor_invalid_code',
+        action: 'transfers.firebase_phone_mismatch',
         ...requestContext,
         metadata: {
-          reason: consumption.reason,
           amount,
           currency,
+          verified_phone_hash: hashForAudit(firebaseVerification.phoneNumber),
+          account_phone_hash: hashForAudit(sender.phone || ''),
         },
       });
-      throw new HttpError(401, 'Two-factor code is invalid.', {
-        code: 'two_factor_code_invalid',
+      throw new HttpError(401, 'Verified Firebase phone number does not match this account.', {
+        code: 'firebase_phone_mismatch',
       });
     }
   }
@@ -439,11 +443,7 @@ async function startTransferTwoFactorChallenge(req, res) {
     return;
   }
 
-  const code = generateOtpCode();
   const expiresAtMs = Date.now() + TRANSFER_2FA_TTL_MS;
-  const codeHash = hashOtpCode(code, sender.id);
-
-  await pocketBase.issueTwoFactorOtp(sender.id, 'transfer', codeHash, TRANSFER_2FA_TTL_MS, currency);
 
   const ticket = createTransferChallengeTicket({
     userId: sender.id,
@@ -468,12 +468,10 @@ async function startTransferTwoFactorChallenge(req, res) {
   const response = {
     success: true,
     two_factor_required: true,
+    two_factor_method: 'firebase_pnv',
     ticket,
     expires_at: new Date(expiresAtMs).toISOString(),
   };
-  if (process.env.NODE_ENV === 'development' && process.env.ALLOW_DEV_OTP_ECHO === 'true') {
-    response.dev_otp = code;
-  }
   sendJson(res, 200, response);
 }
 

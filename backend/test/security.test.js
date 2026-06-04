@@ -19,6 +19,8 @@ process.env.OROYA_TRANSFER_2FA_SECRET =
   process.env.OROYA_TRANSFER_2FA_SECRET || 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^';
 process.env.TWO_FACTOR_HMAC_SECRET =
   process.env.TWO_FACTOR_HMAC_SECRET || process.env.OROYA_TRANSFER_2FA_SECRET;
+process.env.FIREBASE_PNV_PROJECT_NUMBER = process.env.FIREBASE_PNV_PROJECT_NUMBER || '123456789';
+process.env.FIREBASE_PNV_PROJECT_ID = process.env.FIREBASE_PNV_PROJECT_ID || 'chirpchat-test';
 process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 process.env.BACKEND_LOCAL_ONLY = process.env.BACKEND_LOCAL_ONLY || 'true';
 
@@ -81,6 +83,52 @@ function makeJsonRes() {
       this.body += chunk;
     },
   };
+}
+
+function base64Url(input) {
+  return Buffer.from(input)
+    .toString('base64')
+    .replace(/=+$/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+}
+
+function signEs256Jwt(header, payload, privateKey) {
+  const signingInput = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(payload))}`;
+  const derSignature = crypto.sign('sha256', Buffer.from(signingInput), privateKey);
+  return `${signingInput}.${base64Url(derToJoseSignature(derSignature))}`;
+}
+
+function derToJoseSignature(derSignature) {
+  let offset = 0;
+  if (derSignature[offset++] !== 0x30) throw new Error('Invalid DER sequence.');
+  const sequenceLength = derSignature[offset++];
+  if (sequenceLength + 2 !== derSignature.length) throw new Error('Invalid DER length.');
+  const r = readDerInteger(derSignature, () => offset, (next) => {
+    offset = next;
+  });
+  const s = readDerInteger(derSignature, () => offset, (next) => {
+    offset = next;
+  });
+  return Buffer.concat([leftPad32(r), leftPad32(s)]);
+}
+
+function readDerInteger(buffer, getOffset, setOffset) {
+  let offset = getOffset();
+  if (buffer[offset++] !== 0x02) throw new Error('Invalid DER integer.');
+  const length = buffer[offset++];
+  let value = buffer.subarray(offset, offset + length);
+  setOffset(offset + length);
+  while (value.length > 1 && value[0] === 0) {
+    value = value.subarray(1);
+  }
+  return value;
+}
+
+function leftPad32(value) {
+  if (value.length > 32) return value.subarray(value.length - 32);
+  if (value.length === 32) return value;
+  return Buffer.concat([Buffer.alloc(32 - value.length), value]);
 }
 
 describe('K-7: webhook HMAC is verified on raw request bytes', () => {
@@ -249,6 +297,48 @@ describe('K-2: device token issuance and verification', () => {
     const fromBuffer = computeNowPaymentsSignature(buffer, TEST_IPN_SECRET);
     const fromString = computeNowPaymentsSignature(buffer.toString('utf8'), TEST_IPN_SECRET);
     assert.equal(fromBuffer, fromString);
+  });
+});
+
+describe('Firebase Phone Number Verification token verification', () => {
+  test('verifies an ES256 Firebase PNV JWT and extracts the phone number', async () => {
+    const {
+      __setJwksForTests,
+      phoneNumbersMatch,
+      verifyFirebasePnvToken,
+    } = require('../src/firebasePnv');
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', {
+      namedCurve: 'prime256v1',
+    });
+    const jwk = publicKey.export({ format: 'jwk' });
+    jwk.kid = 'test-key-1';
+    jwk.alg = 'ES256';
+    jwk.use = 'sig';
+    __setJwksForTests([jwk]);
+
+    const token = signEs256Jwt(
+      {
+        typ: 'JWT',
+        alg: 'ES256',
+        kid: jwk.kid,
+      },
+      {
+        iss: 'https://fpnv.googleapis.com/projects/123456789',
+        aud: [
+          'https://fpnv.googleapis.com/projects/123456789',
+          'https://fpnv.googleapis.com/projects/chirpchat-test',
+        ],
+        sub: '+905551112233',
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 300,
+      },
+      privateKey,
+    );
+
+    const verified = await verifyFirebasePnvToken(token);
+    assert.equal(verified.phoneNumber, '+905551112233');
+    assert.equal(phoneNumbersMatch('+90 555 111 22 33', verified.phoneNumber), true);
+    assert.equal(phoneNumbersMatch('+90 555 111 22 34', verified.phoneNumber), false);
   });
 });
 
@@ -886,9 +976,10 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
     );
     assert.match(source, /isTwoFactorRequiredForTransfer/);
     assert.match(source, /two_factor_ticket/);
-    assert.match(source, /two_factor_code/);
+    assert.match(source, /firebase_pnv_token/);
     assert.match(source, /verifyTransferChallengeTicket/);
-    assert.match(source, /consumeTwoFactorOtp/);
+    assert.match(source, /verifyFirebasePnvToken/);
+    assert.match(source, /phoneNumbersMatch/);
     assert.match(source, /two_factor_required/);
   });
 
@@ -942,14 +1033,13 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
     }
   });
 
-  test('dev_otp is echoed only with explicit development opt-in', async () => {
+  test('challenge returns Firebase PNV method and never echoes a local OTP', async () => {
     const { pocketBase } = require('../src/pocketbase');
     const { startTransferTwoFactorChallenge } = require('../src/routes/transfers');
     const originals = {
       authenticateBearer: pocketBase.authenticateBearer,
       getUserById: pocketBase.getUserById,
       getTwoFactorSettings: pocketBase.getTwoFactorSettings,
-      issueTwoFactorOtp: pocketBase.issueTwoFactorOtp,
       createAuditLog: pocketBase.createAuditLog,
     };
     const previousNodeEnv = process.env.NODE_ENV;
@@ -958,7 +1048,6 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
       pocketBase.authenticateBearer = async () => ({ id: 'sender' });
       pocketBase.getUserById = async () => ({ id: 'receiver' });
       pocketBase.getTwoFactorSettings = async () => ({ enabled: true, transfer_required: true });
-      pocketBase.issueTwoFactorOtp = async () => ({ id: 'otp' });
       pocketBase.createAuditLog = async () => ({ id: 'audit' });
 
       delete process.env.NODE_ENV;
@@ -973,7 +1062,9 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
         }),
         resDefault,
       );
-      assert.equal(JSON.parse(resDefault.body).dev_otp, undefined);
+      const defaultBody = JSON.parse(resDefault.body);
+      assert.equal(defaultBody.two_factor_method, 'firebase_pnv');
+      assert.equal(defaultBody.dev_otp, undefined);
 
       process.env.NODE_ENV = 'development';
       process.env.ALLOW_DEV_OTP_ECHO = 'true';
@@ -987,7 +1078,9 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
         }),
         resDev,
       );
-      assert.match(JSON.parse(resDev.body).dev_otp, /^\d{6}$/);
+      const devBody = JSON.parse(resDev.body);
+      assert.equal(devBody.two_factor_method, 'firebase_pnv');
+      assert.equal(devBody.dev_otp, undefined);
     } finally {
       Object.assign(pocketBase, originals);
       if (previousNodeEnv === undefined) delete process.env.NODE_ENV;

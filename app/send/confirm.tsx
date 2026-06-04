@@ -19,6 +19,7 @@ import { useWalletStore } from '@/stores/walletStore';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { ApiError, createIdempotencyKey } from '@/services/api/client';
 import { sendInternalTransfer, startTransferTwoFactorChallenge } from '@/services/api/transfers';
+import { requestFirebasePhoneVerification } from '@/services/firebasePnv';
 import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Avatar } from '@/components/ui/Avatar';
 import { Card } from '@/components/ui/Card';
@@ -37,7 +38,7 @@ export default function SendConfirmScreen() {
   const [processing, setProcessing] = useState(false);
   const [pinError, setPinError] = useState('');
   const [twoFactorVisible, setTwoFactorVisible] = useState(false);
-  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [firebasePnvToken, setFirebasePnvToken] = useState('');
   const [twoFactorTicket, setTwoFactorTicket] = useState('');
   const [pendingPin, setPendingPin] = useState('');
   const [pendingIdempotencyKey, setPendingIdempotencyKey] = useState('');
@@ -48,7 +49,12 @@ export default function SendConfirmScreen() {
     setPinModalVisible(true);
   };
 
-  const completeTransfer = async (pin: string, ticket?: string, code?: string, idempotencyKey?: string) => {
+  const completeTransfer = async (
+    pin: string,
+    ticket?: string,
+    phoneVerificationToken?: string,
+    idempotencyKey?: string,
+  ) => {
     const response = await sendInternalTransfer({
       receiverUserId: recipientId || '',
       amount: numAmount,
@@ -56,7 +62,7 @@ export default function SendConfirmScreen() {
       note,
       pin,
       twoFactorTicket: ticket,
-      twoFactorCode: code,
+      firebasePnvToken: phoneVerificationToken,
       idempotencyKey,
     });
     const transaction = response.transaction;
@@ -94,7 +100,7 @@ export default function SendConfirmScreen() {
         setPendingPin(pin);
         setPendingIdempotencyKey(idempotencyKey);
         setTwoFactorTicket(challenge.ticket || '');
-        setTwoFactorCode(challenge.dev_otp || '');
+        setFirebasePnvToken('');
         setTwoFactorVisible(true);
         return;
       }
@@ -109,8 +115,8 @@ export default function SendConfirmScreen() {
   };
 
   const handleTwoFactorSubmit = async () => {
-    if (!/^\d{6}$/.test(twoFactorCode.trim())) {
-      Alert.alert('Invalid code', 'Enter the 6-digit verification code.');
+    if (firebasePnvToken.trim().length < 40) {
+      Alert.alert('Verification required', 'Complete Firebase phone verification before sending.');
       return;
     }
 
@@ -120,7 +126,7 @@ export default function SendConfirmScreen() {
       await completeTransfer(
         pendingPin,
         twoFactorTicket,
-        twoFactorCode.trim(),
+        firebasePnvToken.trim(),
         pendingIdempotencyKey,
       );
     } catch (error) {
@@ -131,7 +137,22 @@ export default function SendConfirmScreen() {
       setPendingPin('');
       setPendingIdempotencyKey('');
       setTwoFactorTicket('');
-      setTwoFactorCode('');
+      setFirebasePnvToken('');
+    }
+  };
+
+  const handleFirebasePhoneVerification = async () => {
+    setProcessing(true);
+    try {
+      const result = await requestFirebasePhoneVerification();
+      setFirebasePnvToken(result.token);
+    } catch {
+      Alert.alert(
+        'Firebase verification unavailable',
+        'Firebase phone verification is not available in this build yet.',
+      );
+    } finally {
+      setProcessing(false);
     }
   };
 
@@ -235,20 +256,22 @@ export default function SendConfirmScreen() {
         <SafeAreaView style={styles.modalContainer}>
           <HeaderBar title="Verify Transfer" showBack onBack={() => setTwoFactorVisible(false)} />
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Two-Factor Code</Text>
+            <Text style={styles.modalTitle}>Phone Verification</Text>
             <Text style={styles.modalSubtitle}>
-              Enter the 6-digit code to complete this {formatCurrency(numAmount)} transfer.
+              Complete Firebase phone verification to authorize this {formatCurrency(numAmount)} transfer.
             </Text>
             <TextInput
-              value={twoFactorCode}
-              onChangeText={(value) => setTwoFactorCode(value.replace(/[^0-9]/g, '').slice(0, 6))}
-              keyboardType="number-pad"
-              maxLength={6}
+              value={firebasePnvToken}
+              onChangeText={setFirebasePnvToken}
+              keyboardType="default"
+              autoCapitalize="none"
+              autoCorrect={false}
               secureTextEntry
               style={styles.twoFactorInput}
               textAlign="center"
             />
-            <Button title="Verify & Send" onPress={handleTwoFactorSubmit} fullWidth />
+            <Button title="Start Firebase Verification" onPress={handleFirebasePhoneVerification} fullWidth />
+            <Button title="Verify Phone & Send" onPress={handleTwoFactorSubmit} fullWidth />
           </View>
         </SafeAreaView>
       </Modal>
@@ -392,8 +415,10 @@ function getTransferErrorMessage(error: unknown) {
       daily_receive_count_limit: 'The receiver has reached today\'s receive limit.',
       receiver_not_found: 'The receiver account could not be found.',
       self_transfer_not_allowed: 'You cannot send money to yourself.',
-      two_factor_required: 'Enter the two-factor code to complete this transfer.',
-      two_factor_code_invalid: 'The two-factor code is invalid.',
+      two_factor_required: 'Complete phone verification to send this transfer.',
+      firebase_pnv_token_invalid: 'Firebase phone verification failed.',
+      firebase_pnv_token_expired: 'Firebase phone verification expired. Please verify again.',
+      firebase_phone_mismatch: 'The verified phone number does not match this account.',
       two_factor_ticket_invalid: 'The two-factor verification expired. Please try again.',
       idempotency_key_conflict: 'This transfer request conflicts with a previous attempt.',
       connection_failed: 'The backend is not reachable. Please make sure it is running.',

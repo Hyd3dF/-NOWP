@@ -6,7 +6,7 @@ Bu rapor `MINIMAX_SECURITY_LEAK_REPORT.md` içindeki Critical ve High bulgular i
 
 ## 1. Kapatılan Critical açıklar
 
-- AUTH-02 / COM-01: Transfer 2FA akışı backend ve frontend arasında çalışır hale getirildi. Yeni kullanıcılar için 2FA varsayılan açık oluşturuluyor; transfer challenge endpoint'i frontend tarafından çağrılıyor; transfer submit `two_factor_ticket` ve `two_factor_code` gönderiyor. Varsayılan transfer 2FA eşiği `0` yapıldı.
+- AUTH-02 / COM-01: Transfer 2FA akışı backend ve frontend arasında çalışır hale getirildi. Transfer challenge endpoint'i frontend tarafından çağrılıyor; transfer submit artık `two_factor_ticket` ile birlikte Firebase Phone Number Verification JWT'sini `firebase_pnv_token` olarak gönderiyor. Backend tokenın Google ES256 imzasını, issuer/audience claim'lerini, son kullanma zamanını ve doğrulanan telefonun sender hesabıyla eşleştiğini kontrol ediyor. Varsayılan transfer 2FA eşiği `0` yapıldı.
 - DEV-1: Device token artık request fingerprint'ine bağlı doğrulanıyor. Token claim'indeki fingerprint hash'i, istekteki device id / platform / user-agent fingerprint'i ile timing-safe karşılaştırılıyor.
 - FE-02 / COM-03 / SES-01 zinciri: Logout user-wide bearer revocation yazar hale getirildi. Frontend 401 `token_revoked` ve `token_invalid_iat` durumlarında session invalidate ediyor.
 - WAL-01 / WAL-02: Transfer wallet update akışı CAS/version filtreleriyle güçlendirildi. Credit failure rollback koşulsuz PATCH yerine version guard ile yapılıyor.
@@ -43,6 +43,7 @@ Bu rapor `MINIMAX_SECURITY_LEAK_REPORT.md` içindeki Critical ve High bulgular i
 
 - `backend/src/config.js`
 - `backend/src/deviceToken.js`
+- `backend/src/firebasePnv.js`
 - `backend/src/http.js`
 - `backend/src/nowpayments.js`
 - `backend/src/pocketbase.js`
@@ -57,6 +58,7 @@ Bu rapor `MINIMAX_SECURITY_LEAK_REPORT.md` içindeki Critical ve High bulgular i
 - `backend/test/security.test.js`
 - `services/api/client.ts`
 - `services/api/transfers.ts`
+- `services/firebasePnv.ts`
 - `app/send/confirm.tsx`
 - `app/deposit/index.tsx`
 - `app/profile/change-password.tsx`
@@ -78,11 +80,12 @@ Bu rapor `MINIMAX_SECURITY_LEAK_REPORT.md` içindeki Critical ve High bulgular i
 - Password reset token hash saklama ve single-use consume.
 - Webhook private network default fail-closed beklentisi.
 - Low-value transferlerin default threshold ile 2FA zorunlu olması.
+- Firebase PNV ES256 JWT imza/claim doğrulaması ve telefon numarası eşleştirme testi.
 
 ## 7. Test sonuçları
 
 - `npm run check --prefix backend`: PASS
-- `npm test --prefix backend`: PASS, 81/81
+- `npm test --prefix backend`: PASS, 82/82
 - `npx tsc --noEmit`: PASS
 - `npm run schema:sync --prefix backend`: PASS, PocketBase bağlantısı başarılı; bir optional `device_security.week_key` index'i skipped.
 
@@ -94,6 +97,7 @@ Bu rapor `MINIMAX_SECURITY_LEAK_REPORT.md` içindeki Critical ve High bulgular i
 - RATE-07: Multi-instance için tam shared Redis/centralized limiter yok; PocketBase bucket'ları ana limiter olarak kullanılıyor ama bazı local state'ler süreç bazlı kalır.
 - `device_security.week_key` index'i PB tarafından kabul edilmedi; veri/field durumunun admin panelinde incelenmesi gerekir.
 - Password reset token üretildi, ancak gerçek email/SMS delivery provider entegrasyonu yok.
+- Firebase PNV backend JWT doğrulaması hazır; Expo managed app için Android native Firebase PNV SDK köprüsü dev build/prebuild ile eklenmelidir. Expo Go içinde native PNV modülü yoksa frontend güvenli şekilde başarısız olur.
 
 ## 9. RED / YELLOW / GREEN kararı
 
@@ -107,5 +111,7 @@ Kod ve schema güvenliği belirgin biçimde güçlendi; ana Critical/High runtim
 - Tüm prod secret'ları rotate et; `OROYA_LEDGER_SECRET`, `OROYA_DEVICE_TOKEN_SECRET`, `TWO_FACTOR_HMAC_SECRET`, NOWPayments ve PB superuser credential'larını secret manager'a taşı.
 - `NODE_ENV=production`, `BACKEND_LOCAL_ONLY`, `CORS_ORIGIN`, webhook allowed IP ayarlarını production deploy'da doğrula.
 - Password reset için güvenilir email/SMS delivery provider ekle; dev echo bayraklarını production'da kapalı tut.
+- Firebase Console'dan proje numarası/proje ID değerlerini `FIREBASE_PNV_PROJECT_NUMBER` ve `FIREBASE_PNV_PROJECT_ID` olarak backend ortamına ekle; paylaşılan test tokenını rotate et ve koda yazma.
+- Android dev build/prebuild içinde Firebase PNV SDK native köprüsünü ekle; `getVerifiedPhoneNumber()` sonucu dönen JWT'yi backend'e `firebase_pnv_token` olarak gönder.
 - Certificate pinning/native network hardening planını uygula.
 - `device_security.week_key` index skip nedenini PB admin tarafında incele ve gerekirse field/index migration'ı veri silmeden tamamla.

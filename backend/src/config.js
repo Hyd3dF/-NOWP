@@ -134,6 +134,11 @@ const config = {
     monthlyRegisterLimit: numberOrDefault(process.env.DEVICE_MONTHLY_REGISTER_LIMIT, 3),
     monthlyLoginAccountLimit: numberOrDefault(process.env.DEVICE_MONTHLY_LOGIN_ACCOUNT_LIMIT, 5),
   },
+  firebase: {
+    pnvProjectNumber: optional('FIREBASE_PNV_PROJECT_NUMBER'),
+    pnvProjectId: optional('FIREBASE_PNV_PROJECT_ID'),
+    pnvJwksUrl: optional('FIREBASE_PNV_JWKS_URL') || 'https://fpnv.googleapis.com/v1beta/jwks',
+  },
   admin: {
     notificationToken: optional('OROYA_ADMIN_NOTIFICATION_TOKEN'),
     notificationTokenHashes: parseList(process.env.OROYA_ADMIN_NOTIFICATION_TOKEN_SHA256 || ''),
