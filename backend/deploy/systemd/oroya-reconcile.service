@@ -1,0 +1,19 @@
+[Unit]
+Description=Oroya deposit reconcile job (recovers crash-mid-credit intents)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=oroya
+WorkingDirectory=/opt/oroya/backend
+EnvironmentFile=/etc/oroya/backend.env
+ExecStart=/usr/bin/node src/scripts/reconcile-pending-deposits.js
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=oroya-reconcile
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

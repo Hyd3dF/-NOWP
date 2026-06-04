@@ -1,5 +1,6 @@
 const { HttpError, getBearerToken, getRequestContext, parseJsonBody, sendJson } = require('../http');
 const { pocketBase } = require('../pocketbase');
+const { verifyDeviceToken } = require('../deviceToken');
 
 function getUrl(req) {
   return new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -7,6 +8,34 @@ function getUrl(req) {
 
 function pickString(body, field) {
   return typeof body[field] === 'string' ? body[field].trim() : '';
+}
+
+async function requireDeviceTokenForUser(userId, context) {
+  if (!context.deviceToken) {
+    throw new HttpError(401, 'Device session token is required.', {
+      code: 'device_token_required',
+    });
+  }
+  let verified;
+  try {
+    verified = verifyDeviceToken(context.deviceToken, context);
+  } catch {
+    throw new HttpError(401, 'Device session token is invalid.', {
+      code: 'device_token_invalid',
+    });
+  }
+  if (verified.userId !== userId) {
+    throw new HttpError(401, 'Device session token does not match the user.', {
+      code: 'device_token_mismatch',
+    });
+  }
+  const record = await pocketBase.findDeviceTokenByHash(verified.tokenHash);
+  if (!record || record.revoked_at) {
+    throw new HttpError(401, 'Device session has been revoked.', {
+      code: 'device_token_revoked',
+    });
+  }
+  return record;
 }
 
 async function listFriends(req, res) {
@@ -23,6 +52,7 @@ async function listFriends(req, res) {
 async function searchFriends(req, res) {
   const token = getBearerToken(req);
   const user = await pocketBase.authenticateBearer(token);
+  await requireDeviceTokenForUser(user.id, getRequestContext(req));
   const url = getUrl(req);
   const query = url.searchParams.get('q') || '';
   const users = await pocketBase.searchUsersForFriend(query, user.id);

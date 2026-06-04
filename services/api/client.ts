@@ -17,7 +17,13 @@ const localApiUrl = Platform.select({
 });
 
 const DEVICE_ID_KEY = 'oroya_device_id';
+const DEVICE_TOKEN_KEY = 'oroya_device_token';
 let unauthorizedHandler: (() => Promise<void> | void) | null = null;
+let unauthorizedInFlight: Promise<void> | null = null;
+
+const SECURE_STORE_OPTIONS = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+} as const;
 
 export class ApiError extends Error {
   code: string;
@@ -81,6 +87,7 @@ class OroyaApiClient {
 
   private async getHeaders(options: RequestOptions): Promise<Record<string, string>> {
     const deviceId = await getOrCreateDeviceId();
+    const deviceToken = await getDeviceToken();
     const headers: Record<string, string> = {
       ...options.headers,
       'Content-Type': 'application/json',
@@ -88,6 +95,9 @@ class OroyaApiClient {
       'X-Oroya-Client-Platform': Platform.OS,
       'X-Oroya-App-Version': Constants.expoConfig?.version || 'unknown',
     };
+    if (deviceToken) {
+      headers['X-Oroya-Device-Token'] = deviceToken;
+    }
     delete headers.Authorization;
 
     if (options.skipAuth) return headers;
@@ -130,12 +140,25 @@ class OroyaApiClient {
 
     if (!response.ok) {
       const errorCode = getErrorCode(response.status, data);
-      if (!options.skipAuth && isSessionAuthFailure(response.status, errorCode)) {
-        await unauthorizedHandler?.();
+      if (
+        !options.skipAuth &&
+        isSessionAuthFailure(response.status, errorCode) &&
+        errorCode !== 'device_token_required' &&
+        errorCode !== 'device_token_invalid' &&
+        errorCode !== 'device_token_revoked'
+      ) {
+        await notifyUnauthorized();
+      }
+      if (
+        errorCode === 'device_token_revoked' ||
+        errorCode === 'device_token_invalid'
+      ) {
+        await setDeviceToken(null);
       }
       throw new ApiError(errorCode, response.status);
     }
 
+    captureDeviceToken(data);
     return data as T;
   }
 
@@ -172,6 +195,14 @@ function parseJsonResponse(text: string) {
   }
 }
 
+function captureDeviceToken(data: unknown) {
+  if (!data || typeof data !== 'object') return;
+  const token = (data as { device_token?: unknown }).device_token;
+  if (typeof token === 'string' && token.length > 0) {
+    void setDeviceToken(token);
+  }
+}
+
 function getErrorCode(status: number, data: unknown) {
   const serverCode =
     data && typeof data === 'object' && 'code' in data ? String((data as { code?: unknown }).code) : '';
@@ -199,7 +230,22 @@ function getErrorCode(status: number, data: unknown) {
 
 function isSessionAuthFailure(status: number, errorCode: string) {
   if (status !== 401 && status !== 403) return false;
-  return errorCode === 'auth_failed' || errorCode === 'auth_required';
+  return (
+    errorCode === 'auth_failed' ||
+    errorCode === 'auth_required' ||
+    errorCode === 'token_revoked' ||
+    errorCode === 'token_invalid_iat'
+  );
+}
+
+async function notifyUnauthorized() {
+  if (!unauthorizedHandler) return;
+  if (!unauthorizedInFlight) {
+    unauthorizedInFlight = Promise.resolve(unauthorizedHandler()).finally(() => {
+      unauthorizedInFlight = null;
+    });
+  }
+  await unauthorizedInFlight;
 }
 
 async function getOrCreateDeviceId() {
@@ -209,10 +255,31 @@ async function getOrCreateDeviceId() {
 
     const random = getRandomId();
     const deviceId = `device_${random}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
-    await SecureStore.setItemAsync(DEVICE_ID_KEY, deviceId);
+    await SecureStore.setItemAsync(DEVICE_ID_KEY, deviceId, SECURE_STORE_OPTIONS);
     return deviceId;
   } catch {
-    return `volatile_${getRandomId()}`;
+    throw new ApiError('device_identity_unavailable', 500);
+  }
+}
+
+async function getDeviceToken(): Promise<string | null> {
+  try {
+    const value = await SecureStore.getItemAsync(DEVICE_TOKEN_KEY);
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setDeviceToken(token: string | null) {
+  try {
+    if (token) {
+      await SecureStore.setItemAsync(DEVICE_TOKEN_KEY, token, SECURE_STORE_OPTIONS);
+    } else {
+      await SecureStore.deleteItemAsync(DEVICE_TOKEN_KEY);
+    }
+  } catch {
+    console.warn('Failed to persist device token');
   }
 }
 
@@ -228,7 +295,9 @@ function getRandomId() {
     return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
   }
 
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random()
-    .toString(36)
-    .slice(2)}`;
+  throw new Error('Secure random generator is unavailable.');
+}
+
+export function createIdempotencyKey(prefix = 'req') {
+  return `${prefix}_${getRandomId()}`.replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 120);
 }

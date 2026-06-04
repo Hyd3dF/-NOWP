@@ -7,19 +7,18 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
-import { spacing, borderRadius, shadows } from '@/theme/spacing';
+import { spacing, borderRadius } from '@/theme/spacing';
 import { HeaderBar } from '@/components/shared/HeaderBar';
-import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
 import { CoinLogo } from '@/components/ui/CoinLogo';
-import { ApiError, api } from '@/services/api/client';
+import { ApiError, api, createIdempotencyKey } from '@/services/api/client';
 import { isValidAmount } from '@/utils/validation';
 import {
   FALLBACK_CURRENCIES,
@@ -86,10 +85,14 @@ export default function DepositScreen() {
 
     setIsLoading(true);
     try {
+      const idempotencyKey = createIdempotencyKey('dep');
       const response = await api.post<DepositResponse>('/payments/create-deposit', {
         amount: Number(amount),
         currency: 'usd',
-        network: selectedCoinObj.id,
+        network: (selectedCoinObj.code || selectedCoinObj.id).toLowerCase(),
+        idempotency_key: idempotencyKey,
+      }, {
+        'X-Idempotency-Key': idempotencyKey,
       });
       setPayment(response.payment);
       router.push('/deposit/result');
@@ -114,37 +117,41 @@ export default function DepositScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.description}>
-            Oroya creates the deposit address securely on the server. Send only the selected crypto and network from your external wallet.
-          </Text>
+          {error ? (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : null}
 
-          <Card variant="default" style={styles.formCard}>
-            {error ? (
-              <View style={styles.errorBox}>
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            ) : null}
+          {/* Amount (USD) Option */}
+          <View style={styles.inputContainer}>
+            <Text style={styles.inputLabel}>Amount (USD)</Text>
+            <View style={styles.inputLineRow}>
+              <TextInput
+                style={styles.textInput}
+                placeholder="Enter amount in USD"
+                placeholderTextColor={colors.light.textTertiary}
+                value={amount}
+                onChangeText={(value) => setAmount(value.replace(/[^0-9.]/g, ''))}
+                keyboardType="decimal-pad"
+              />
+            </View>
+          </View>
 
-            <Input
-              label="Amount (USD)"
-              placeholder="Enter amount in USD"
-              value={amount}
-              onChangeText={(value) => setAmount(value.replace(/[^0-9.]/g, ''))}
-              keyboardType="decimal-pad"
-            />
-
-            <Text style={styles.fieldLabel}>Select Crypto</Text>
+          {/* Select Crypto Option */}
+          <View style={styles.inputContainer}>
+            <Text style={styles.inputLabel}>Select Crypto</Text>
             <Pressable
-              style={styles.coinSelectBtn}
+              style={styles.coinSelectRow}
               onPress={() => router.push('/deposit/select-coin')}
             >
               <View style={styles.coinSelectLeft}>
                 <CoinLogo
                   symbol={selectedCoinObj.symbol}
-                  size={36}
+                  size={28}
                   style={styles.selectedCoinLogo}
                 />
-                <View>
+                <View style={styles.selectedCoinInfo}>
                   <View style={styles.selectedCoinSymbolRow}>
                     <Text style={styles.selectedCoinSymbol}>{selectedCoinObj.symbol}</Text>
                     {selectedCoinObj.network ? (
@@ -156,22 +163,21 @@ export default function DepositScreen() {
                   <Text style={styles.selectedCoinName}>{selectedCoinObj.name}</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={20} color={colors.light.textTertiary} />
+              <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
             </Pressable>
+          </View>
 
-            <Button
-              title={isCurrenciesLoading ? 'Loading currencies...' : 'Create Deposit Address'}
-              onPress={createDeposit}
-              loading={isLoading}
-              disabled={isCurrenciesLoading}
-              fullWidth
-              style={styles.createBtn}
-            />
-          </Card>
+          <Button
+            title={isCurrenciesLoading ? 'Loading currencies...' : 'Create Deposit Address'}
+            onPress={createDeposit}
+            loading={isLoading}
+            disabled={isCurrenciesLoading}
+            style={styles.button}
+          />
 
           {isLoading ? (
-            <View style={styles.loadingCard}>
-              <ActivityIndicator color={colors.light.primary} />
+            <View style={styles.loadingBox}>
+              <ActivityIndicator size="small" color={colors.light.primary} />
               <Text style={styles.loadingText}>Creating deposit address...</Text>
             </View>
           ) : null}
@@ -191,60 +197,55 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: spacing.xl,
-    paddingBottom: spacing['2xl'],
+    paddingTop: spacing['2xl'],
+    paddingBottom: spacing['3xl'],
   },
-  description: {
-    ...typography.bodySm,
-    color: colors.light.textSecondary,
-    lineHeight: 20,
-    textAlign: 'center',
-    marginTop: spacing.md,
-    marginBottom: spacing.lg,
+  inputContainer: {
+    width: '100%',
+    marginBottom: spacing.xl,
   },
-  formCard: {
-    padding: spacing.lg,
-  },
-  errorBox: {
-    backgroundColor: colors.light.errorLight,
-    borderWidth: 1,
-    borderColor: colors.light.error,
-    borderRadius: borderRadius.md,
-    padding: spacing.md,
-    marginBottom: spacing.lg,
-  },
-  errorText: {
-    ...typography.bodySm,
-    color: colors.light.error,
-    textAlign: 'center',
-  },
-  fieldLabel: {
-    ...typography.bodySm,
-    color: colors.light.textPrimary,
+  inputLabel: {
+    fontSize: 13,
     fontWeight: '600',
-    marginBottom: spacing.sm,
-    marginTop: spacing.sm,
+    color: colors.light.textSecondary,
+    letterSpacing: 0.2,
+    marginBottom: spacing.xs,
   },
-  coinSelectBtn: {
+  inputLineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1.5,
+    borderBottomColor: colors.light.border,
+    minHeight: 44,
+  },
+  textInput: {
+    flex: 1,
+    fontSize: 16,
+    color: colors.light.textPrimary,
+    textAlign: 'left',
+    paddingVertical: spacing.sm,
+  },
+  coinSelectRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    minHeight: 64,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: colors.light.border,
-    backgroundColor: colors.light.surface,
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.sm,
+    borderBottomWidth: 1.5,
+    borderBottomColor: colors.light.border,
+    minHeight: 52,
+    paddingVertical: spacing.xs,
   },
   coinSelectLeft: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   selectedCoinLogo: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     marginRight: spacing.md,
+  },
+  selectedCoinInfo: {
+    justifyContent: 'center',
   },
   selectedCoinSymbolRow: {
     flexDirection: 'row',
@@ -252,7 +253,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   selectedCoinSymbol: {
-    ...typography.bodySm,
+    fontSize: 15,
     fontWeight: '700',
     color: colors.light.textPrimary,
   },
@@ -268,25 +269,39 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   selectedCoinName: {
-    ...typography.caption,
+    fontSize: 12,
     color: colors.light.textSecondary,
     marginTop: 2,
   },
-  createBtn: {
-    marginTop: spacing.lg,
+  errorBox: {
+    backgroundColor: '#FFF2F2',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
   },
-  loadingCard: {
-    marginTop: spacing.lg,
-    borderRadius: borderRadius.lg,
-    backgroundColor: colors.light.surface,
-    padding: spacing.lg,
+  errorText: {
+    ...typography.bodySm,
+    color: colors.light.error,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  button: {
+    alignSelf: 'center',
+    paddingHorizontal: spacing.xl,
+    marginTop: spacing['2xl'],
+    minWidth: 220,
+    borderRadius: 22,
+  },
+  loadingBox: {
+    marginTop: spacing.xl,
+    flexDirection: 'row',
     alignItems: 'center',
-    ...shadows.card,
+    justifyContent: 'center',
+    gap: spacing.sm,
   },
   loadingText: {
     ...typography.bodySm,
     color: colors.light.textSecondary,
-    marginTop: spacing.sm,
   },
 });
 

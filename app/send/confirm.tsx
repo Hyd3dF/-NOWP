@@ -6,6 +6,7 @@ import {
   ActivityIndicator,
   Modal,
   Alert,
+  TextInput,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,8 +17,8 @@ import { spacing, borderRadius, shadows } from '@/theme/spacing';
 import { useSendStore } from '@/stores/sendStore';
 import { useWalletStore } from '@/stores/walletStore';
 import { useTransactionStore } from '@/stores/transactionStore';
-import { ApiError } from '@/services/api/client';
-import { sendInternalTransfer } from '@/services/api/transfers';
+import { ApiError, createIdempotencyKey } from '@/services/api/client';
+import { sendInternalTransfer, startTransferTwoFactorChallenge } from '@/services/api/transfers';
 import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Avatar } from '@/components/ui/Avatar';
 import { Card } from '@/components/ui/Card';
@@ -35,6 +36,11 @@ export default function SendConfirmScreen() {
   const [pinModalVisible, setPinModalVisible] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [pinError, setPinError] = useState('');
+  const [twoFactorVisible, setTwoFactorVisible] = useState(false);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorTicket, setTwoFactorTicket] = useState('');
+  const [pendingPin, setPendingPin] = useState('');
+  const [pendingIdempotencyKey, setPendingIdempotencyKey] = useState('');
 
   const numAmount = parseFloat(amount || '0');
 
@@ -42,41 +48,90 @@ export default function SendConfirmScreen() {
     setPinModalVisible(true);
   };
 
+  const completeTransfer = async (pin: string, ticket?: string, code?: string, idempotencyKey?: string) => {
+    const response = await sendInternalTransfer({
+      receiverUserId: recipientId || '',
+      amount: numAmount,
+      currency: wallet?.currency || 'USD',
+      note,
+      pin,
+      twoFactorTicket: ticket,
+      twoFactorCode: code,
+      idempotencyKey,
+    });
+    const transaction = response.transaction;
+
+    await Promise.all([
+      fetchWallet(),
+      fetchTransactions(),
+    ]);
+
+    setLastTransaction(
+      transaction.reference_id,
+      transaction.created_at || new Date().toISOString(),
+      amount,
+      recipientName,
+    );
+    reset();
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    router.replace('/send/receipt');
+  };
+
   const handlePinComplete = async (pin: string) => {
     setPinError('');
 
     setPinModalVisible(false);
     setProcessing(true);
+    const idempotencyKey = createIdempotencyKey('tr');
 
     try {
-      const response = await sendInternalTransfer({
+      const challenge = await startTransferTwoFactorChallenge({
         receiverUserId: recipientId || '',
         amount: numAmount,
         currency: wallet?.currency || 'USD',
-        note,
-        pin,
       });
-      const transaction = response.transaction;
+      if (challenge.two_factor_required) {
+        setPendingPin(pin);
+        setPendingIdempotencyKey(idempotencyKey);
+        setTwoFactorTicket(challenge.ticket || '');
+        setTwoFactorCode(challenge.dev_otp || '');
+        setTwoFactorVisible(true);
+        return;
+      }
 
-      await Promise.all([
-        fetchWallet(),
-        fetchTransactions(),
-      ]);
-
-      setLastTransaction(
-        transaction.reference_id,
-        transaction.created_at || new Date().toISOString(),
-        amount,
-        recipientName,
-      );
-      reset();
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      router.replace('/send/receipt');
+      await completeTransfer(pin, undefined, undefined, idempotencyKey);
     } catch (error) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       Alert.alert('Transfer not completed', getTransferErrorMessage(error));
     } finally {
       setProcessing(false);
+    }
+  };
+
+  const handleTwoFactorSubmit = async () => {
+    if (!/^\d{6}$/.test(twoFactorCode.trim())) {
+      Alert.alert('Invalid code', 'Enter the 6-digit verification code.');
+      return;
+    }
+
+    setTwoFactorVisible(false);
+    setProcessing(true);
+    try {
+      await completeTransfer(
+        pendingPin,
+        twoFactorTicket,
+        twoFactorCode.trim(),
+        pendingIdempotencyKey,
+      );
+    } catch (error) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      Alert.alert('Transfer not completed', getTransferErrorMessage(error));
+    } finally {
+      setProcessing(false);
+      setPendingPin('');
+      setPendingIdempotencyKey('');
+      setTwoFactorTicket('');
+      setTwoFactorCode('');
     }
   };
 
@@ -167,6 +222,33 @@ export default function SendConfirmScreen() {
                 title="Enter security PIN"
               />
             </View>
+          </View>
+        </SafeAreaView>
+      </Modal>
+
+      <Modal
+        visible={twoFactorVisible}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setTwoFactorVisible(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <HeaderBar title="Verify Transfer" showBack onBack={() => setTwoFactorVisible(false)} />
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Two-Factor Code</Text>
+            <Text style={styles.modalSubtitle}>
+              Enter the 6-digit code to complete this {formatCurrency(numAmount)} transfer.
+            </Text>
+            <TextInput
+              value={twoFactorCode}
+              onChangeText={(value) => setTwoFactorCode(value.replace(/[^0-9]/g, '').slice(0, 6))}
+              keyboardType="number-pad"
+              maxLength={6}
+              secureTextEntry
+              style={styles.twoFactorInput}
+              textAlign="center"
+            />
+            <Button title="Verify & Send" onPress={handleTwoFactorSubmit} fullWidth />
           </View>
         </SafeAreaView>
       </Modal>
@@ -287,6 +369,15 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
   },
+  twoFactorInput: {
+    ...typography.h2,
+    color: colors.light.textPrimary,
+    borderBottomWidth: 1.5,
+    borderBottomColor: colors.light.border,
+    marginVertical: spacing['2xl'],
+    paddingVertical: spacing.md,
+    letterSpacing: 0,
+  },
 });
 
 function getTransferErrorMessage(error: unknown) {
@@ -301,6 +392,10 @@ function getTransferErrorMessage(error: unknown) {
       daily_receive_count_limit: 'The receiver has reached today\'s receive limit.',
       receiver_not_found: 'The receiver account could not be found.',
       self_transfer_not_allowed: 'You cannot send money to yourself.',
+      two_factor_required: 'Enter the two-factor code to complete this transfer.',
+      two_factor_code_invalid: 'The two-factor code is invalid.',
+      two_factor_ticket_invalid: 'The two-factor verification expired. Please try again.',
+      idempotency_key_conflict: 'This transfer request conflicts with a previous attempt.',
       connection_failed: 'The backend is not reachable. Please make sure it is running.',
     };
 

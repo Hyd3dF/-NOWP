@@ -1,0 +1,11 @@
+# /etc/cron.d/oroya-reconcile
+# Reconcile any payment_intent that crashed between claim and credit mark.
+# Runs every 5 minutes as the oroya service user.
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SHELL=/bin/bash
+
+*/5 * * * * oroya cd /opt/oroya/backend && /usr/bin/node src/scripts/reconcile-pending-deposits.js >> /var/log/oroya/reconcile.log 2>&1
+
+# Audit log retention: nightly at 03:13, keep non-financial 90d, financial 365d.
+13 3 * * * oroya cd /opt/oroya/backend && /usr/bin/node src/scripts/purge-audit-logs.js >> /var/log/oroya/audit-purge.log 2>&1

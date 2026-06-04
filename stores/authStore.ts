@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
-import { api, setUnauthorizedHandler } from '../services/api/client';
+import { api, setDeviceToken, setUnauthorizedHandler } from '../services/api/client';
 import { UserProfile } from '../types/user';
 import { usePaymentProfileStore } from './paymentProfileStore';
 import { useFriendStore } from './friendStore';
@@ -90,6 +90,9 @@ const SECURE_KEYS = {
   BIOMETRICS: 'oroya_biometrics_enabled',
 };
 const PIN_CONFIGURED_VALUE = 'configured';
+const SECURE_STORE_OPTIONS = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+} as const;
 
 function mapBackendUser(user: BackendUser): UserProfile {
   const displayName =
@@ -121,8 +124,8 @@ function mapVerificationStatus(status?: string): UserProfile['kycStatus'] {
 
 async function persistSession(user: UserProfile, token: string) {
   await Promise.all([
-    SecureStore.setItemAsync(SECURE_KEYS.USER, JSON.stringify(user)),
-    SecureStore.setItemAsync(SECURE_KEYS.TOKEN, token),
+    SecureStore.setItemAsync(SECURE_KEYS.USER, JSON.stringify(user), SECURE_STORE_OPTIONS),
+    SecureStore.setItemAsync(SECURE_KEYS.TOKEN, token, SECURE_STORE_OPTIONS),
   ]);
 }
 
@@ -236,7 +239,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signup: async (input: SignupInput) => {
     set({ isLoading: true });
     try {
-      const response = await api.post<AuthResponse>(
+      await api.post<{ success: boolean; requiresLogin: boolean }>(
         '/auth/register',
         {
           first_name: input.firstName.trim(),
@@ -255,13 +258,25 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         undefined,
         true,
       );
-      const user = mapBackendUser(response.user);
+
+      const loginResponse = await api.post<AuthResponse>(
+        '/auth/login',
+        {
+          identity: input.email.trim().toLowerCase(),
+          password: input.password,
+        },
+        undefined,
+        true,
+      );
+
+      const user = mapBackendUser(loginResponse.user);
       await Promise.all([
-        persistSession(user, response.token),
-        SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE),
+        persistSession(user, loginResponse.token),
+        SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE, SECURE_STORE_OPTIONS),
       ]);
       set({ user, pin: PIN_CONFIGURED_VALUE, isAuthenticated: true, isLoading: false });
     } catch (error) {
+      await setDeviceToken(null);
       set({ isLoading: false });
       throw error;
     }
@@ -276,6 +291,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       console.warn('Failed to clear secure storage during logout');
     }
 
+    await setDeviceToken(null);
+
     clearClientSessionState();
     set({
       user: null,
@@ -288,7 +305,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   setPin: async (pin: string) => {
     try {
-      await SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE);
+      await SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE, SECURE_STORE_OPTIONS);
     } catch {
       console.warn('Failed to save PIN securely');
     }
@@ -298,7 +315,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   changePin: async (currentPin: string, newPin: string) => {
     await changeSecurityPin(currentPin, newPin);
     try {
-      await SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE);
+      await SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE, SECURE_STORE_OPTIONS);
     } catch {
       console.warn('Failed to save updated PIN securely');
     }
@@ -322,7 +339,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const updatedUser = mapBackendUser(response.user);
 
     try {
-      await SecureStore.setItemAsync(SECURE_KEYS.USER, JSON.stringify(updatedUser));
+      await SecureStore.setItemAsync(SECURE_KEYS.USER, JSON.stringify(updatedUser), SECURE_STORE_OPTIONS);
     } catch {
       console.warn('Failed to update user profile in secure storage');
     }
@@ -332,7 +349,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   setBiometricsEnabled: async (enabled: boolean) => {
     try {
-      await SecureStore.setItemAsync(SECURE_KEYS.BIOMETRICS, enabled ? 'true' : 'false');
+      await SecureStore.setItemAsync(SECURE_KEYS.BIOMETRICS, enabled ? 'true' : 'false', SECURE_STORE_OPTIONS);
     } catch {
       console.warn('Failed to save biometrics setting');
     }
@@ -349,7 +366,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       const response = await api.get<MeResponse>('/users/me');
       const user = mapBackendUser(response.user);
-      await SecureStore.setItemAsync(SECURE_KEYS.USER, JSON.stringify(user));
+      await SecureStore.setItemAsync(SECURE_KEYS.USER, JSON.stringify(user), SECURE_STORE_OPTIONS);
       set({ user, isAuthenticated: true, isLoading: false });
     } catch (error) {
       set({ isLoading: false });

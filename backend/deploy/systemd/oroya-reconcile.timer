@@ -1,0 +1,13 @@
+[Unit]
+Description=Oroya deposit reconcile timer (every 5 minutes)
+Requires=oroya-reconcile.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=oroya-reconcile.service
+
+[Install]
+WantedBy=timers.target

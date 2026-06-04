@@ -165,9 +165,9 @@ class PocketBaseClient {
     return result.items?.[0] || null;
   }
 
-  async ensureDeviceSecurity(context, userId = '') {
+  async ensureDeviceSecurity(context, userId = '', verifiedFingerprintHash = '') {
     const now = new Date().toISOString();
-    const deviceId = getStableDeviceId(context);
+    const deviceId = getStableDeviceId(context, verifiedFingerprintHash);
     const periodKey = getMonthKey(new Date());
     const existing = await this.getDeviceSecurity(deviceId);
 
@@ -214,8 +214,8 @@ class PocketBaseClient {
     });
   }
 
-  async assertDeviceCanRegister(context) {
-    const device = await this.ensureDeviceSecurity(context);
+  async assertDeviceCanRegister(context, verifiedFingerprintHash = '') {
+    const device = await this.ensureDeviceSecurity(context, '', verifiedFingerprintHash);
     if (Number(device.account_create_count_week || 0) >= config.deviceSecurity.monthlyRegisterLimit) {
       throw new HttpError(429, 'This device reached the monthly account creation limit.', {
         code: 'monthly_device_register_limit',
@@ -224,8 +224,8 @@ class PocketBaseClient {
     return device;
   }
 
-  async assertDeviceCanLogin(context, userId = '') {
-    const device = await this.ensureDeviceSecurity(context);
+  async assertDeviceCanLogin(context, userId = '', verifiedFingerprintHash = '') {
+    const device = await this.ensureDeviceSecurity(context, userId, verifiedFingerprintHash);
     const loginUserIds = normalizeIdList(device.login_user_ids);
     const isKnownAccount = userId && loginUserIds.includes(userId);
     if (
@@ -240,8 +240,8 @@ class PocketBaseClient {
     return device;
   }
 
-  async recordDeviceUsage(context, { userId, accountCreated = false, loggedIn = false }) {
-    const device = await this.ensureDeviceSecurity(context, userId);
+  async recordDeviceUsage(context, { userId, accountCreated = false, loggedIn = false }, verifiedFingerprintHash = '') {
+    const device = await this.ensureDeviceSecurity(context, userId, verifiedFingerprintHash);
     const loginUserIds = normalizeIdList(device.login_user_ids);
     if (loggedIn && userId && !loginUserIds.includes(userId)) {
       loginUserIds.push(userId);
@@ -577,9 +577,9 @@ class PocketBaseClient {
     });
   }
 
-  async upsertDeviceSession(userId, context) {
+  async upsertDeviceSession(userId, context, verifiedFingerprintHash = '') {
     if (!userId) return null;
-    const deviceId = getStableDeviceId(context);
+    const deviceId = getStableDeviceId(context, verifiedFingerprintHash);
     const filter = encodeURIComponent(
       `user_id = "${escapeFilterValue(userId)}" && device_id = "${escapeFilterValue(deviceId)}"`,
     );
@@ -617,6 +617,228 @@ class PocketBaseClient {
       if (error.status === 404) return null;
       throw error;
     }
+  }
+
+  async findDeviceTokenByHash(tokenHash) {
+    if (!tokenHash) return null;
+    const filter = encodeURIComponent(`token_hash = "${escapeFilterValue(tokenHash)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/device_tokens/records?filter=${filter}&perPage=1`,
+    );
+    return result.items?.[0] || null;
+  }
+
+  async findDeviceTokenByUserAndFingerprint(userId, fingerprintHash) {
+    if (!userId || !fingerprintHash) return null;
+    const filter = encodeURIComponent(
+      `user_id = "${escapeFilterValue(userId)}" && device_fingerprint = "${escapeFilterValue(fingerprintHash)}" && revoked_at = ""`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/device_tokens/records?filter=${filter}&sort=-issued_at&perPage=1`,
+    );
+    return result.items?.[0] || null;
+  }
+
+  async issueDeviceTokenRecord({
+    userId,
+    tokenHash,
+    fingerprint,
+    fingerprintHash,
+    context = {},
+    issuedAt,
+    expiresAt,
+  }) {
+    const nowIso = new Date().toISOString();
+    return this.adminRequest('/api/collections/device_tokens/records', {
+      method: 'POST',
+      body: {
+        user_id: userId,
+        token_hash: tokenHash,
+        device_fingerprint: fingerprintHash,
+        device_platform: context.devicePlatform || '',
+        device_info: context.deviceInfo || '',
+        last_ip_address: context.ipAddress || '',
+        user_agent: context.deviceInfo || '',
+        issued_at: new Date(issuedAt * 1000).toISOString(),
+        last_seen_at: nowIso,
+        expires_at: new Date(expiresAt * 1000).toISOString(),
+        revoked_at: '',
+        created_at: nowIso,
+        updated_at: nowIso,
+      },
+    });
+  }
+
+  async touchDeviceToken(recordId) {
+    const now = new Date().toISOString();
+    return this.adminRequest(
+      `/api/collections/device_tokens/records/${encodeURIComponent(recordId)}`,
+      {
+        method: 'PATCH',
+        body: {
+          last_seen_at: now,
+          updated_at: now,
+        },
+      },
+    );
+  }
+
+  async revokeDeviceToken(recordId, reason = 'logout') {
+    const now = new Date().toISOString();
+    return this.adminRequest(
+      `/api/collections/device_tokens/records/${encodeURIComponent(recordId)}`,
+      {
+        method: 'PATCH',
+        body: {
+          revoked_at: now,
+          revoked_reason: String(reason).slice(0, 80),
+          updated_at: now,
+        },
+      },
+    );
+  }
+
+  async revokeAllDeviceTokensForUser(userId, reason = 'security_reset') {
+    if (!userId) return;
+    const filter = encodeURIComponent(
+      `user_id = "${escapeFilterValue(userId)}" && revoked_at = ""`,
+    );
+    const now = new Date().toISOString();
+    let revoked = 0;
+    for (let pageGuard = 0; pageGuard < 100; pageGuard += 1) {
+      const result = await this.adminRequest(
+        `/api/collections/device_tokens/records?filter=${filter}&perPage=100&page=1`,
+      );
+      const items = result.items || [];
+      if (!items.length) break;
+      for (const record of items) {
+        await this.adminRequest(
+          `/api/collections/device_tokens/records/${encodeURIComponent(record.id)}`,
+          {
+            method: 'PATCH',
+            body: {
+              revoked_at: now,
+              revoked_reason: String(reason).slice(0, 80),
+              updated_at: now,
+            },
+          },
+        ).catch(() => {});
+        revoked += 1;
+      }
+      if (items.length < 100) break;
+    }
+    if (revoked >= 10000) {
+      await this.createAuditLog({
+        userId,
+        action: 'device_tokens.revoke_cap_reached',
+        metadata: { revoked, reason },
+      }).catch(() => {});
+    }
+    return revoked;
+  }
+
+  async recordWebhookNonce(nonce, source, ttlMs) {
+    if (!nonce) return { accepted: false, reason: 'missing' };
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + ttlMs);
+    const nowIso = now.toISOString();
+    try {
+      await this.adminRequest('/api/collections/webhook_nonces/records', {
+        method: 'POST',
+        body: {
+          nonce: String(nonce).slice(0, 200),
+          source: String(source).slice(0, 40),
+          received_at: nowIso,
+          expires_at: expiresAt.toISOString(),
+        },
+      });
+      return { accepted: true };
+    } catch (error) {
+      if (error.status === 409) {
+        return { accepted: false, reason: 'duplicate' };
+      }
+      throw error;
+    }
+  }
+
+  async findStaleIntentsWithClaimButNoTransaction() {
+    const filter = encodeURIComponent(
+      `credit_applied_at != "" || (status != "completed" && nowpayments_payment_id != "")`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/payment_intents/records?filter=${filter}&perPage=50&sort=credit_applied_at`,
+    );
+    return result.items || [];
+  }
+
+  async issueTwoFactorOtp(userId, purpose, codeHash, ttlMs, context = '') {
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + ttlMs);
+    const nowIso = now.toISOString();
+    const record = await this.adminRequest('/api/collections/two_factor_otps/records', {
+      method: 'POST',
+      body: {
+        user_id: userId,
+        code_hash: codeHash,
+        purpose: String(purpose).slice(0, 40),
+        expires_at: expiresAt.toISOString(),
+        failed_attempt_count: 0,
+        last_attempt_at: nowIso,
+        consumed_at: '',
+        context: String(context).slice(0, 500),
+        created_at: nowIso,
+        updated_at: nowIso,
+      },
+    });
+    return record;
+  }
+
+  async consumeTwoFactorOtp(userId, purpose, codeHash) {
+    const maxFailures = Number(process.env.OROYA_2FA_MAX_FAILED_ATTEMPTS || 5);
+    const filter = encodeURIComponent(
+      `user_id = "${escapeFilterValue(userId)}" && purpose = "${escapeFilterValue(purpose)}" && consumed_at = "" && expires_at >= "${new Date().toISOString()}"`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/two_factor_otps/records?filter=${filter}&perPage=1&sort=-created_at`,
+    );
+    const record = result.items?.[0];
+    if (!record) return { ok: false, reason: 'not_found' };
+    if (Number(record.failed_attempt_count || 0) >= maxFailures) {
+      return { ok: false, reason: 'locked' };
+    }
+    if (record.code_hash !== codeHash) {
+      const updated = Number(record.failed_attempt_count || 0) + 1;
+      await this.adminRequest(
+        `/api/collections/two_factor_otps/records/${encodeURIComponent(record.id)}`,
+        {
+          method: 'PATCH',
+          body: {
+            failed_attempt_count: updated,
+            last_attempt_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        },
+      ).catch(() => {});
+      return { ok: false, reason: 'mismatch' };
+    }
+    const consumeFilter = encodeURIComponent(
+      `id = "${escapeFilterValue(record.id)}" && consumed_at = ""`,
+    );
+    const consumed = await this.adminRequest(
+      `/api/collections/two_factor_otps/records/${encodeURIComponent(record.id)}?filter=${consumeFilter}`,
+      {
+        method: 'PATCH',
+        body: {
+          consumed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      },
+    ).catch((error) => {
+      if (error.status === 404) return null;
+      throw error;
+    });
+    if (!consumed?.id) return { ok: false, reason: 'already_consumed' };
+    return { ok: true, record: consumed };
   }
 
   async listDeviceSessions(userId) {
@@ -670,6 +892,99 @@ class PocketBaseClient {
     }
 
     return { changedAt: now, strengthScore: score };
+  }
+
+  async changePasswordWithoutCurrent(user, newPassword) {
+    if (String(newPassword || '').length < 8) {
+      throw new HttpError(400, 'Password must be at least 8 characters.', {
+        code: 'weak_password',
+      });
+    }
+
+    await this.adminRequest(`/api/collections/users/records/${encodeURIComponent(user.id)}`, {
+      method: 'PATCH',
+      body: {
+        password: newPassword,
+        passwordConfirm: newPassword,
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    const now = new Date().toISOString();
+    const score = getPasswordStrengthScore(newPassword);
+    const existing = await this.getPasswordCredential(user.id).catch(() => null);
+    if (existing) {
+      await this.adminRequest(`/api/collections/password_credentials/records/${encodeURIComponent(existing.id)}`, {
+        method: 'PATCH',
+        body: {
+          changed_at: now,
+          strength_score: score,
+          updated_at: now,
+        },
+      });
+    } else {
+      await this.adminRequest('/api/collections/password_credentials/records', {
+        method: 'POST',
+        body: {
+          user_id: user.id,
+          changed_at: now,
+          strength_score: score,
+          created_at: now,
+          updated_at: now,
+        },
+      });
+    }
+
+    return { changedAt: now, strengthScore: score };
+  }
+
+  async issuePasswordResetToken(userId, ttlMs = 15 * 60 * 1000) {
+    const token = crypto.randomBytes(32).toString('base64url');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const record = await this.adminRequest('/api/collections/password_reset_tokens/records', {
+      method: 'POST',
+      body: {
+        user_id: userId,
+        token_hash: tokenHash,
+        requested_at: nowIso,
+        expires_at: new Date(now.getTime() + ttlMs).toISOString(),
+        consumed_at: '',
+        created_at: nowIso,
+        updated_at: nowIso,
+      },
+    });
+    return { token, record };
+  }
+
+  async consumePasswordResetToken(token) {
+    const tokenHash = crypto.createHash('sha256').update(String(token || '')).digest('hex');
+    const filter = encodeURIComponent(
+      `token_hash = "${escapeFilterValue(tokenHash)}" && consumed_at = "" && expires_at >= "${new Date().toISOString()}"`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/password_reset_tokens/records?filter=${filter}&perPage=1`,
+    );
+    const record = result.items?.[0];
+    if (!record) return null;
+    const consumeFilter = encodeURIComponent(
+      `id = "${escapeFilterValue(record.id)}" && consumed_at = ""`,
+    );
+    const consumed = await this.adminRequest(
+      `/api/collections/password_reset_tokens/records/${encodeURIComponent(record.id)}?filter=${consumeFilter}`,
+      {
+        method: 'PATCH',
+        body: {
+          consumed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      },
+    ).catch((error) => {
+      if (error.status === 404) return null;
+      throw error;
+    });
+    return consumed || null;
   }
 
   async getPasswordCredential(userId) {
@@ -726,13 +1041,95 @@ class PocketBaseClient {
     if (!token) {
       throw new HttpError(401, 'Authorization token is required.');
     }
+    if (await this.isBearerTokenRevoked(token)) {
+      throw new HttpError(401, 'Authorization token has been revoked.', {
+        code: 'token_revoked',
+      });
+    }
 
     const auth = await this.request('/api/collections/users/auth-refresh', {
       method: 'POST',
       token,
     });
+    if (isJwtIssuedInFuture(token)) {
+      throw new HttpError(401, 'Authorization token has an invalid issue time.', {
+        code: 'token_invalid_iat',
+      });
+    }
+    const revokedAfter = await this.getUserTokenRevokedAfter(auth.record?.id).catch(() => null);
+    if (revokedAfter?.revoked_after && isJwtIssuedBefore(token, revokedAfter.revoked_after)) {
+      throw new HttpError(401, 'Authorization token has been revoked.', {
+        code: 'token_revoked',
+      });
+    }
 
     return this.withUserFileUrls(auth.record);
+  }
+
+  async isBearerTokenRevoked(token) {
+    const tokenHash = hashBearerToken(token);
+    const filter = encodeURIComponent(`token_hash = "${escapeFilterValue(tokenHash)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/revoked_bearer_tokens/records?filter=${filter}&perPage=1`,
+    );
+    const record = result.items?.[0];
+    if (!record) return false;
+    const expiresAtMs = record.expires_at ? new Date(record.expires_at).getTime() : 0;
+    return !expiresAtMs || expiresAtMs > Date.now();
+  }
+
+  async getUserTokenRevokedAfter(userId) {
+    if (!userId) return null;
+    const filter = encodeURIComponent(`user_id = "${escapeFilterValue(userId)}"`);
+    const result = await this.adminRequest(
+      `/api/collections/user_session_revocations/records?filter=${filter}&perPage=1`,
+    );
+    return result.items?.[0] || null;
+  }
+
+  async revokeBearerTokensForUser(userId, reason = 'security_reset') {
+    if (!userId) return null;
+    const existing = await this.getUserTokenRevokedAfter(userId).catch(() => null);
+    const now = new Date().toISOString();
+    const body = {
+      user_id: userId,
+      revoked_after: now,
+      reason: String(reason).slice(0, 80),
+      updated_at: now,
+    };
+    if (existing) {
+      return this.adminRequest(
+        `/api/collections/user_session_revocations/records/${encodeURIComponent(existing.id)}`,
+        { method: 'PATCH', body },
+      );
+    }
+    return this.adminRequest('/api/collections/user_session_revocations/records', {
+      method: 'POST',
+      body: {
+        ...body,
+        created_at: now,
+      },
+    });
+  }
+
+  async revokeBearerToken(token, { userId = '', reason = 'logout', ttlMs = 14 * 24 * 60 * 60 * 1000 } = {}) {
+    if (!token) return null;
+    const now = new Date();
+    const tokenHash = hashBearerToken(token);
+    return this.adminRequest('/api/collections/revoked_bearer_tokens/records', {
+      method: 'POST',
+      body: {
+        token_hash: tokenHash,
+        user_id: userId,
+        reason: String(reason).slice(0, 80),
+        revoked_at: now.toISOString(),
+        expires_at: new Date(now.getTime() + ttlMs).toISOString(),
+        created_at: now.toISOString(),
+      },
+    }).catch((error) => {
+      if (error.status === 409) return null;
+      throw error;
+    });
   }
 
   async createWallet(userId, currency = config.defaultWalletCurrency) {
@@ -746,6 +1143,7 @@ class PocketBaseClient {
         locked_balance: 0,
         total_deposited: 0,
         total_withdrawn: 0,
+        version: 1,
         created_at: now,
         updated_at: now,
       },
@@ -835,25 +1233,98 @@ class PocketBaseClient {
     return this.createWallet(userId, normalizedCurrency);
   }
 
+  async getWalletById(walletId) {
+    if (!walletId) return null;
+    try {
+      return await this.adminRequest(
+        `/api/collections/wallets/records/${encodeURIComponent(walletId)}`,
+      );
+    } catch (error) {
+      if (error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async claimPaymentIntentCredit(intentId) {
+    if (!intentId) {
+      return { claimed: false, intent: null };
+    }
+    const now = new Date().toISOString();
+    const intent = await this.adminRequest(
+      `/api/collections/payment_intents/records/${encodeURIComponent(intentId)}`,
+    ).catch(() => null);
+    if (!intent || intent.credit_applied_at) {
+      return { claimed: false, intent };
+    }
+
+    try {
+      await this.adminRequest('/api/collections/payment_credit_claims/records', {
+        method: 'POST',
+        body: {
+          payment_intent_id: intentId,
+          claimed_at: now,
+          created_at: now,
+        },
+      });
+    } catch (error) {
+      if (error.status === 409) {
+        return { claimed: false, intent };
+      }
+      throw error;
+    }
+
+    const updated = await this.adminRequest(
+      `/api/collections/payment_intents/records/${encodeURIComponent(intentId)}`,
+      {
+        method: 'PATCH',
+        body: {
+          credit_applied_at: now,
+          updated_at: now,
+        },
+      },
+    );
+    return { claimed: true, intent: updated };
+  }
+
+  async markTransactionCreditApplied(transactionId) {
+    if (!transactionId) return null;
+    const now = new Date().toISOString();
+    const filter = encodeURIComponent(
+      `id = "${escapeFilterValue(transactionId)}" && (credit_applied_at = "" || credit_applied_at = null)`,
+    );
+    return this.adminRequest(
+      `/api/collections/transactions/records/${encodeURIComponent(transactionId)}?filter=${filter}`,
+      {
+        method: 'PATCH',
+        body: {
+          credit_applied_at: now,
+          updated_at: now,
+        },
+      },
+    ).catch(() => null);
+  }
+
   async updateWalletBalance(wallet, amountDelta) {
     const trustedWallet = await this.reconcileWalletBalance(wallet, 'wallets.deposit_before_update');
-    const currentBalance = Number(trustedWallet.balance || 0);
-    const currentDeposited = Number(wallet.total_deposited || 0);
-
-    return this.adminRequest(`/api/collections/wallets/records/${encodeURIComponent(wallet.id)}`, {
-      method: 'PATCH',
-      body: {
-        balance: roundMoney(currentBalance + amountDelta),
-        total_deposited: currentDeposited + amountDelta,
-        updated_at: new Date().toISOString(),
-      },
+    const updated = await this.updateWalletBalanceOptimistic(trustedWallet, amountDelta, {
+      totalDepositedDelta: amountDelta,
     });
+    return updated;
   }
 
   async updateWalletForInternalTransfer(wallet, amountDelta) {
     const trustedWallet = await this.reconcileWalletBalance(wallet, 'wallets.transfer_before_update');
-    const currentBalance = Number(trustedWallet.balance || 0);
-    const nextBalance = roundMoney(currentBalance + amountDelta);
+    return this.updateWalletBalanceOptimistic(trustedWallet, amountDelta, {});
+  }
+
+  async updateWalletBalanceOptimistic(wallet, amountDelta, { totalDepositedDelta = 0 } = {}) {
+    const target = wallet;
+    const expectedVersion = Number(target.version || 0);
+    const expectedUpdatedAt = String(target.updated || target.updated_at || '');
+    const currentBalance = Number(target.balance || 0);
+    const currentLocked = Number(target.locked_balance || 0);
+    const nextBalance = roundMoney(currentBalance + Number(amountDelta || 0));
+    const nextLocked = roundMoney(currentLocked);
 
     if (!Number.isFinite(nextBalance) || nextBalance < 0) {
       throw new HttpError(409, 'Insufficient wallet balance.', {
@@ -861,12 +1332,40 @@ class PocketBaseClient {
       });
     }
 
-    return this.adminRequest(`/api/collections/wallets/records/${encodeURIComponent(wallet.id)}`, {
-      method: 'PATCH',
-      body: {
-        balance: nextBalance,
-        updated_at: new Date().toISOString(),
+    const filters = [`id = "${escapeFilterValue(target.id)}"`];
+    if (Number.isFinite(expectedVersion) && expectedVersion > 0) {
+      filters.push(`version = ${expectedVersion}`);
+    }
+    if (expectedUpdatedAt) {
+      filters.push(`updated = "${escapeFilterValue(expectedUpdatedAt)}"`);
+    }
+
+    const body = {
+      balance: nextBalance,
+      locked_balance: nextLocked,
+      version: expectedVersion + 1,
+      updated_at: new Date().toISOString(),
+    };
+    if (totalDepositedDelta) {
+      body.total_deposited = roundMoney(Number(target.total_deposited || 0) + Number(totalDepositedDelta || 0));
+    }
+
+    const result = await this.adminRequest(
+      `/api/collections/wallets/records/${encodeURIComponent(target.id)}?filter=${encodeURIComponent(
+        filters.join(' && '),
+      )}`,
+      {
+        method: 'PATCH',
+        body,
       },
+    );
+
+    if (result && typeof result === 'object' && result.id) {
+      return result;
+    }
+
+    throw new HttpError(409, 'Wallet was updated by another request. Please retry.', {
+      code: 'wallet_conflict',
     });
   }
 
@@ -878,14 +1377,18 @@ class PocketBaseClient {
     const locked = roundMoney(Number(wallet.locked_balance || 0));
     if (current === expected && locked >= 0) return wallet;
 
-    const corrected = await this.adminRequest(`/api/collections/wallets/records/${encodeURIComponent(wallet.id)}`, {
-      method: 'PATCH',
-      body: {
-        balance: expected,
-        locked_balance: Math.max(0, locked),
-        updated_at: new Date().toISOString(),
+    const corrected = await this.adminRequest(
+      `/api/collections/wallets/records/${encodeURIComponent(wallet.id)}`,
+      {
+        method: 'PATCH',
+        body: {
+          balance: expected,
+          locked_balance: Math.max(0, locked),
+          version: Number(wallet.version || 0) + 1,
+          updated_at: new Date().toISOString(),
+        },
       },
-    });
+    );
 
     await this.createAuditLog({
       userId: wallet.user_id,
@@ -907,37 +1410,47 @@ class PocketBaseClient {
     const filter = encodeURIComponent(
       `currency = "${escapeFilterValue(normalizedCurrency)}" && status = "completed" && (user_id = "${escapeFilterValue(userId)}" || sender_user_id = "${escapeFilterValue(userId)}" || receiver_user_id = "${escapeFilterValue(userId)}")`,
     );
-    const result = await this.adminRequest(
-      `/api/collections/transactions/records?filter=${filter}&sort=created_at&perPage=500`,
-    );
-
     let balance = 0;
-    for (const transaction of result.items || []) {
-      if (!this.isTransactionIntegrityTrusted(transaction)) {
-        await this.createAuditLog({
-          userId,
-          action: 'wallets.transaction_tamper_detected',
-          metadata: {
-            transaction_id: transaction.id,
-            reference_id: transaction.reference_id || '',
-            currency: transaction.currency || '',
-          },
-        }).catch(() => {});
-        continue;
+    const pageSize = 200;
+    let page = 1;
+
+    while (true) {
+      const result = await this.adminRequest(
+        `/api/collections/transactions/records?filter=${filter}&sort=created_at&perPage=${pageSize}&page=${page}`,
+      );
+      const items = result.items || [];
+      if (!items.length) break;
+
+      for (const transaction of items) {
+        if (!this.isTransactionIntegrityTrusted(transaction)) {
+          await this.createAuditLog({
+            userId,
+            action: 'wallets.transaction_tamper_detected',
+            metadata: {
+              transaction_id: transaction.id,
+              reference_id: transaction.reference_id || '',
+              currency: transaction.currency || '',
+            },
+          }).catch(() => {});
+          continue;
+        }
+
+        const amount = roundMoney(Number(transaction.amount || 0));
+        if (!Number.isFinite(amount) || amount <= 0) continue;
+
+        if (transaction.type === 'deposit' && transaction.user_id === userId) {
+          balance = roundMoney(balance + amount);
+        } else if (transaction.type === 'send' && transaction.sender_user_id === userId) {
+          balance = roundMoney(balance - amount);
+        } else if (transaction.type === 'send' && transaction.receiver_user_id === userId) {
+          balance = roundMoney(balance + amount);
+        } else if (transaction.type === 'withdrawal' && transaction.user_id === userId) {
+          balance = roundMoney(balance - amount);
+        }
       }
 
-      const amount = roundMoney(Number(transaction.amount || 0));
-      if (!Number.isFinite(amount) || amount <= 0) continue;
-
-      if (transaction.type === 'deposit' && transaction.user_id === userId) {
-        balance = roundMoney(balance + amount);
-      } else if (transaction.type === 'send' && transaction.sender_user_id === userId) {
-        balance = roundMoney(balance - amount);
-      } else if (transaction.type === 'send' && transaction.receiver_user_id === userId) {
-        balance = roundMoney(balance + amount);
-      } else if (transaction.type === 'withdrawal' && transaction.user_id === userId) {
-        balance = roundMoney(balance - amount);
-      }
+      if (items.length < pageSize) break;
+      page += 1;
     }
 
     const roundedBalance = roundMoney(balance);
@@ -965,14 +1478,43 @@ class PocketBaseClient {
     const filter = encodeURIComponent(
       `${userField} = "${escapeFilterValue(userId)}" && type = "send" && status = "completed" && created_at >= "${start.toISOString()}"`,
     );
-    const result = await this.adminRequest(
-      `/api/collections/transactions/records?filter=${filter}&perPage=200`,
-    );
-    const items = result.items || [];
+
+    let totalAmount = 0;
+    let totalCount = 0;
+    const pageSize = 200;
+    let page = 1;
+
+    while (true) {
+      const result = await this.adminRequest(
+        `/api/collections/transactions/records?filter=${filter}&perPage=${pageSize}&page=${page}&sort=created_at&fields=amount`,
+      );
+      const items = result.items || [];
+      if (!items.length) break;
+      totalCount += items.length;
+      for (const transaction of items) {
+        totalAmount += Number(transaction.amount || 0);
+      }
+      if (items.length < pageSize) break;
+      if (page >= 50) {
+        await this.createAuditLog({
+          userId,
+          action: 'transfers.daily_stats_paginated_cap_reached',
+          metadata: {
+            direction,
+            page,
+            totalCount,
+            totalAmount,
+            cap: 50,
+          },
+        }).catch(() => {});
+        break;
+      }
+      page += 1;
+    }
 
     return {
-      count: items.length,
-      amount: items.reduce((total, transaction) => total + Number(transaction.amount || 0), 0),
+      count: totalCount,
+      amount: roundMoney(totalAmount),
     };
   }
 
@@ -993,6 +1535,107 @@ class PocketBaseClient {
       created_at: now,
       completed_at: now,
       updated_at: now,
+    });
+  }
+
+  async applyInternalTransferWithLock({
+    senderUserId,
+    receiverUserId,
+    amount,
+    currency,
+    referenceId,
+    note = '',
+    maxAttempts = 4,
+  }) {
+    const normalizedAmount = roundMoney(Number(amount));
+    if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+      throw new HttpError(400, 'Transfer amount is invalid.', { code: 'invalid_amount' });
+    }
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const senderWallet = await this.ensureWallet(senderUserId, currency);
+      const receiverWallet = await this.ensureWallet(receiverUserId, currency);
+
+      const senderBalance = Number(senderWallet.balance || 0);
+      const senderLocked = Number(senderWallet.locked_balance || 0);
+      const senderAvailable = roundMoney(senderBalance - senderLocked);
+      if (senderAvailable < normalizedAmount) {
+        throw new HttpError(409, 'Insufficient wallet balance.', {
+          code: 'insufficient_balance',
+        });
+      }
+
+      const debitBody = {
+        balance: roundMoney(senderBalance - normalizedAmount),
+        locked_balance: roundMoney(senderLocked),
+        version: Number(senderWallet.version || 0) + 1,
+        updated_at: new Date().toISOString(),
+      };
+      const debitFilter = encodeURIComponent(
+        `id = "${escapeFilterValue(senderWallet.id)}" && version = ${Number(senderWallet.version || 0)}`,
+      );
+      const debited = await this.adminRequest(
+        `/api/collections/wallets/records/${encodeURIComponent(senderWallet.id)}?filter=${debitFilter}`,
+        { method: 'PATCH', body: debitBody },
+      ).catch((error) => {
+        if (error.status === 404) return null;
+        throw error;
+      });
+
+      if (!debited || !debited.id) {
+        continue;
+      }
+
+      const transaction = await this.createInternalTransferTransaction({
+        senderUserId,
+        receiverUserId,
+        amount: normalizedAmount,
+        currency,
+        referenceId,
+        note,
+      });
+
+      const creditBody = {
+        balance: roundMoney(Number(receiverWallet.balance || 0) + normalizedAmount),
+        locked_balance: roundMoney(Number(receiverWallet.locked_balance || 0)),
+        version: Number(receiverWallet.version || 0) + 1,
+        updated_at: new Date().toISOString(),
+      };
+      const creditFilter = encodeURIComponent(
+        `id = "${escapeFilterValue(receiverWallet.id)}" && version = ${Number(receiverWallet.version || 0)}`,
+      );
+      const credited = await this.adminRequest(
+        `/api/collections/wallets/records/${encodeURIComponent(receiverWallet.id)}?filter=${creditFilter}`,
+        { method: 'PATCH', body: creditBody },
+      ).catch((error) => {
+        if (error.status === 404) return null;
+        throw error;
+      });
+
+      if (!credited || !credited.id) {
+        const rollbackFilter = encodeURIComponent(
+          `id = "${escapeFilterValue(senderWallet.id)}" && version = ${Number(debited.version || 0)}`,
+        );
+        await this.adminRequest(
+          `/api/collections/wallets/records/${encodeURIComponent(senderWallet.id)}?filter=${rollbackFilter}`,
+          {
+            method: 'PATCH',
+            body: {
+              balance: roundMoney(senderBalance),
+              locked_balance: roundMoney(senderLocked),
+              version: Number(debited.version || 0) + 1,
+              updated_at: new Date().toISOString(),
+            },
+          },
+        ).catch(() => {});
+        continue;
+      }
+
+      return { transaction, senderWallet: debited, receiverWallet: credited };
+    }
+
+    throw new HttpError(409, 'Wallet was updated by another request. Please retry.', {
+      code: 'wallet_conflict',
     });
   }
 
@@ -1090,6 +1733,85 @@ class PocketBaseClient {
       note: input.note || '',
       created_at: now,
       completed_at: input.completedAt || '',
+      updated_at: now,
+    });
+  }
+
+  async createDepositReversalTransaction(input) {
+    const now = new Date().toISOString();
+
+    return this.createTransactionRecord({
+      user_id: input.userId,
+      type: 'withdrawal',
+      amount: input.amount,
+      currency: input.currency,
+      status: 'completed',
+      provider: input.provider || 'nowpayments',
+      provider_payment_id: input.providerPaymentId || '',
+      network: input.network || '',
+      reference_id: input.referenceId,
+      note: input.note || '',
+      created_at: now,
+      completed_at: now,
+      updated_at: now,
+    });
+  }
+
+  async findTransactionByReferenceId(referenceId) {
+    if (!referenceId) return null;
+    const filter = encodeURIComponent(
+      `reference_id = "${escapeFilterValue(referenceId)}"`,
+    );
+    try {
+      const result = await this.adminRequest(
+        `/api/collections/transactions/records?filter=${filter}&perPage=1&sort=-created_at`,
+      );
+      return result.items?.[0] || null;
+    } catch (error) {
+      if (error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async ensureWalletForUser(user, currency) {
+    const normalizedCurrency = normalizeCurrency(
+      currency || config.defaultWalletCurrency || 'TRY',
+    );
+    const filter = encodeURIComponent(
+      `user_id = "${escapeFilterValue(user.id)}" && currency = "${escapeFilterValue(normalizedCurrency)}"`,
+    );
+    const result = await this.adminRequest(
+      `/api/collections/wallets/records?filter=${filter}&perPage=1`,
+    );
+    if (result.items?.[0]) return result.items[0];
+    return this.adminRequest('/api/collections/wallets/records', {
+      method: 'POST',
+      body: {
+        user_id: user.id,
+        currency: normalizedCurrency,
+        balance: 0,
+        locked_balance: 0,
+        total_deposited: 0,
+        total_withdrawn: 0,
+        version: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    });
+  }
+
+  async createTransaction(input) {
+    const now = new Date().toISOString();
+    return this.createTransactionRecord({
+      user_id: input.user_id,
+      type: input.type,
+      amount: input.amount,
+      currency: input.currency,
+      status: input.status || 'completed',
+      reference_id: input.reference_id,
+      metadata: input.metadata || {},
+      created_at: now,
+      completed_at: now,
       updated_at: now,
     });
   }
@@ -1270,38 +1992,44 @@ class PocketBaseClient {
     if (cleanQuery.length < 3) return [];
 
     const normalizedTag = sanitizePaymentTag(cleanQuery.replace(/^#|@/g, ''));
-    const filters = [
-      `username ~ "${escapeFilterValue(cleanQuery.replace(/^@/, ''))}"`,
-      `email ~ "${escapeFilterValue(cleanQuery)}"`,
-    ];
+    const usernameQuery = cleanQuery.replace(/^@/, '').toLowerCase();
 
     if (normalizedTag.length >= 3) {
       const profile = await this.findPaymentProfileByTag(normalizedTag);
       if (profile?.user_id && profile.user_id !== currentUserId) {
         const user = await this.getUserById(profile.user_id);
-        return user ? [await this.toFriendUser(user)] : [];
+        if (user) {
+          return [await this.toFriendUser(user)];
+        }
       }
     }
 
-    const filter = encodeURIComponent(`(${filters.join(' || ')}) && id != "${escapeFilterValue(currentUserId)}"`);
+    const escapedUsername = escapeFilterValue(usernameQuery);
+    const filter = encodeURIComponent(
+      `lower(username) ~ "${escapedUsername}" && id != "${escapeFilterValue(currentUserId)}"`,
+    );
     const result = await this.adminRequest(
-      `/api/collections/users/records?filter=${filter}&perPage=20&sort=username`,
+      `/api/collections/users/records?filter=${filter}&perPage=20&sort=username&fields=id,username,first_name,last_name,profile_photo_url,profile_photo_file`,
     );
 
     const users = result.items || [];
     return Promise.all(users.map((user) => this.toFriendUser(user)));
   }
 
-  async toFriendUser(user) {
+  async toFriendUser(user, { includePhone = false } = {}) {
     const profile = await this.ensurePaymentProfile(user);
-    return {
+    const projection = {
       id: user.id,
       displayName: getDisplayName(user),
       username: user.username || '',
-      phone: user.phone || '',
-      avatarUrl: user.profile_photo_url || getRecordFileUrl(this.baseUrl, 'users', user, 'profile_photo_file'),
+      avatarUrl:
+        user.profile_photo_url || getRecordFileUrl(this.baseUrl, 'users', user, 'profile_photo_file'),
       oroyaId: profile.payment_tag,
     };
+    if (includePhone) {
+      projection.phone = user.phone || '';
+    }
+    return projection;
   }
 
   async listFriendRequests(userId) {
@@ -1346,8 +2074,9 @@ class PocketBaseClient {
   }
 
   async findPendingFriendRequest(userId, friendUserId) {
+    const pairKey = getFriendPairKey(userId, friendUserId);
     const filter = encodeURIComponent(
-      `status = "pending" && ((requester_user_id = "${escapeFilterValue(userId)}" && receiver_user_id = "${escapeFilterValue(friendUserId)}") || (requester_user_id = "${escapeFilterValue(friendUserId)}" && receiver_user_id = "${escapeFilterValue(userId)}"))`,
+      `status = "pending" && (pair_key = "${escapeFilterValue(pairKey)}" || ((requester_user_id = "${escapeFilterValue(userId)}" && receiver_user_id = "${escapeFilterValue(friendUserId)}") || (requester_user_id = "${escapeFilterValue(friendUserId)}" && receiver_user_id = "${escapeFilterValue(userId)}")))`,
     );
     const result = await this.adminRequest(
       `/api/collections/friend_requests/records?filter=${filter}&perPage=1`,
@@ -1375,16 +2104,23 @@ class PocketBaseClient {
     if (pending) return pending;
 
     const now = new Date().toISOString();
+    const pairKey = getFriendPairKey(requesterUserId, receiverUserId);
     return this.adminRequest('/api/collections/friend_requests/records', {
       method: 'POST',
       body: {
         requester_user_id: requesterUserId,
         receiver_user_id: receiverUserId,
+        pair_key: pairKey,
         status: 'pending',
         message: message || '',
         created_at: now,
         updated_at: now,
       },
+    }).catch(async (error) => {
+      if (error.status !== 409) throw error;
+      const existing = await this.findPendingFriendRequest(requesterUserId, receiverUserId);
+      if (existing) return existing;
+      throw error;
     });
   }
 
@@ -1413,7 +2149,9 @@ class PocketBaseClient {
 
     const [userAId, userBId] = sortUserPair(request.requester_user_id, request.receiver_user_id);
     const existing = await this.findFriendship(userAId, userBId);
-    const friendship = existing || await this.adminRequest('/api/collections/friendships/records', {
+    let friendship = existing;
+    if (!friendship) {
+      friendship = await this.adminRequest('/api/collections/friendships/records', {
       method: 'POST',
       body: {
         user_a_id: userAId,
@@ -1423,7 +2161,11 @@ class PocketBaseClient {
         created_at: now,
         updated_at: now,
       },
-    });
+      }).catch(async (error) => {
+        if (error.status !== 409) throw error;
+        return this.findFriendship(userAId, userBId);
+      });
+    }
 
     const thread = await this.ensureChatThread(friendship);
     return { friendship, thread };
@@ -1450,7 +2192,7 @@ class PocketBaseClient {
         status: friendship.status,
         createdAt: friendship.created_at || friendship.created,
         threadId: thread.id,
-        user: await this.toFriendUser(friendUser),
+        user: await this.toFriendUser(friendUser, { includePhone: true }),
       });
     }
 
@@ -1661,9 +2403,9 @@ class PocketBaseClient {
           type: notification.type || 'system',
           title: notification.title || 'Oroya',
           body: notification.body || '',
-          imageUrl: notification.image_url || '',
+          imageUrl: sanitizeHttpsUrl(notification.image_url),
           icon: notification.icon || 'notifications-outline',
-          linkUrl: notification.link_url || '',
+          linkUrl: sanitizeHttpsUrl(notification.link_url),
           referenceCollection: 'notifications',
           referenceId: notification.id,
           isRead: Boolean(read),
@@ -1688,10 +2430,11 @@ class PocketBaseClient {
   }
 
   async markNotificationRead(userId, notificationId) {
-    if (!notificationId || String(notificationId).includes(':')) return null;
+    const cleanNotificationId = String(notificationId || '').trim().slice(0, 200);
+    if (!cleanNotificationId || !/^[A-Za-z0-9_:-]+$/.test(cleanNotificationId)) return null;
 
     const filter = encodeURIComponent(
-      `user_id = "${escapeFilterValue(userId)}" && notification_id = "${escapeFilterValue(notificationId)}"`,
+      `user_id = "${escapeFilterValue(userId)}" && notification_id = "${escapeFilterValue(cleanNotificationId)}"`,
     );
     const existing = await this.adminRequest(
       `/api/collections/notification_reads/records?filter=${filter}&perPage=1`,
@@ -1703,7 +2446,7 @@ class PocketBaseClient {
       method: 'POST',
       body: {
         user_id: userId,
-        notification_id: notificationId,
+        notification_id: cleanNotificationId,
         read_at: now,
         created_at: now,
       },
@@ -1712,15 +2455,17 @@ class PocketBaseClient {
 
   async createAdminNotification(input) {
     const now = new Date().toISOString();
+    const imageUrl = requireHttpsOptionalUrl(input.imageUrl, 'image_url');
+    const linkUrl = requireHttpsOptionalUrl(input.linkUrl, 'link_url');
     return this.adminRequest('/api/collections/notifications/records', {
       method: 'POST',
       body: {
         title: sanitizeLogString(input.title, 120),
         body: sanitizeLogString(input.body, 1000),
         type: sanitizeLogString(input.type || 'system', 40),
-        image_url: sanitizeLogString(input.imageUrl || '', 500),
+        image_url: imageUrl,
         icon: sanitizeLogString(input.icon || 'notifications-outline', 60),
-        link_url: sanitizeLogString(input.linkUrl || '', 500),
+        link_url: linkUrl,
         audience: 'all',
         status: 'published',
         metadata: sanitizeMetadata(input.metadata || {}),
@@ -1865,6 +2610,36 @@ function getTransactionSignature(transaction) {
     .digest('hex');
 }
 
+function hashBearerToken(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function isJwtIssuedBefore(token, revokedAfterIso) {
+  const issuedAtMs = getJwtIssuedAtMs(token);
+  const revokedAfterMs = new Date(revokedAfterIso).getTime();
+  if (!Number.isFinite(revokedAfterMs)) return false;
+  if (!issuedAtMs) return true;
+  return issuedAtMs <= revokedAfterMs;
+}
+
+function isJwtIssuedInFuture(token, leewayMs = 60 * 1000) {
+  const issuedAtMs = getJwtIssuedAtMs(token);
+  if (!issuedAtMs) return false;
+  return issuedAtMs > Date.now() + leewayMs;
+}
+
+function getJwtIssuedAtMs(token) {
+  const parts = String(token || '').split('.');
+  if (parts.length < 2) return 0;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    const iat = Number(payload.iat || 0);
+    return Number.isFinite(iat) && iat > 0 ? iat * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function isUnknownFieldError(error, fieldNames) {
   const text = JSON.stringify(error?.details || error?.data || error || {});
   return fieldNames.some((fieldName) => text.includes(fieldName));
@@ -1884,6 +2659,30 @@ function sanitizePaymentTag(value) {
     .replace(/[^a-z0-9_]/g, '')
     .slice(0, 18);
   return clean.length >= 3 ? clean : `oro${clean}`;
+}
+
+function sanitizeHttpsUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' ? url.toString().slice(0, 500) : '';
+  } catch {
+    return '';
+  }
+}
+
+function requireHttpsOptionalUrl(value, field) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const safe = sanitizeHttpsUrl(raw);
+  if (!safe) {
+    throw new HttpError(400, `${field} must be an https URL.`, {
+      code: 'invalid_notification_url',
+      field,
+    });
+  }
+  return safe;
 }
 
 function getDisplayName(user) {
@@ -1907,13 +2706,29 @@ function sortUserPair(userId, friendUserId) {
   return [String(userId), String(friendUserId)].sort();
 }
 
-function getStableDeviceId(context) {
-  const explicit = String(context?.deviceId || '').trim();
-  if (explicit.length >= 8) {
-    return `explicit_${crypto.createHash('sha256').update(explicit).digest('hex')}`;
+function getFriendPairKey(userId, friendUserId) {
+  return sortUserPair(userId, friendUserId).join(':');
+}
+
+function getStableDeviceId(context, verifiedFingerprintHash) {
+  if (verifiedFingerprintHash) {
+    return `token_${verifiedFingerprintHash}`;
   }
 
-  const fallback = `${context?.ipAddress || ''}|${context?.deviceInfo || ''}`;
+  const ip = String(context?.ipAddress || '').trim();
+  const userAgent = String(context?.deviceInfo || '').trim();
+  const platform = String(context?.devicePlatform || '').trim();
+  const explicit = String(context?.deviceId || '').trim();
+
+  if (explicit.length >= 8) {
+    const salted = crypto
+      .createHmac('sha256', `${ip}|${userAgent}|${platform}`)
+      .update(explicit)
+      .digest('hex');
+    return `explicit_${salted}`;
+  }
+
+  const fallback = `${ip}|${userAgent}|${platform}`;
   return `fallback_${crypto.createHash('sha256').update(fallback).digest('hex')}`;
 }
 
@@ -2010,6 +2825,7 @@ const pocketBase = new PocketBaseClient();
 
 module.exports = {
   LEVEL_ONE_LIMITS,
+  hashBearerToken,
   pocketBase,
   sanitizeUser,
 };

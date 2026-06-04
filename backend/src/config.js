@@ -1,9 +1,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const crypto = require('node:crypto');
 
 const backendRoot = path.resolve(__dirname, '..');
+const projectRoot = path.resolve(backendRoot, '..');
 const envPath = process.env.BACKEND_ENV_FILE || path.join(backendRoot, '.env');
+const projectEnvPath = path.join(projectRoot, '.env');
 
 function parseEnvLine(line) {
   const trimmed = line.trim();
@@ -39,7 +40,12 @@ function loadEnv(filePath) {
   }
 }
 
+loadEnv(projectEnvPath);
 loadEnv(envPath);
+
+const isSchemaSyncMode =
+  process.argv.some((arg) => String(arg).includes('sync-pocketbase-schema')) &&
+  process.env.OROYA_SCHEMA_SIGN_UNSIGNED_TRANSACTIONS !== 'true';
 
 function required(name) {
   const value = process.env[name];
@@ -47,6 +53,23 @@ function required(name) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
+}
+
+function requiredAny(names) {
+  for (const name of names) {
+    if (process.env[name]) return process.env[name];
+  }
+  throw new Error(`Missing required environment variable: ${names.join(' or ')}`);
+}
+
+function requiredRuntime(name) {
+  if (isSchemaSyncMode) return '';
+  return required(name);
+}
+
+function requiredAnyRuntime(names) {
+  if (isSchemaSyncMode) return '';
+  return requiredAny(names);
 }
 
 function trimTrailingSlash(value) {
@@ -101,9 +124,11 @@ const config = {
     allowUnsignedLedger: process.env.OROYA_LEDGER_ALLOW_UNSIGNED === 'true',
     pinMaxAttempts: numberOrDefault(process.env.OROYA_PIN_MAX_ATTEMPTS, 5),
     pinLockMinutes: numberOrDefault(process.env.OROYA_PIN_LOCK_MINUTES, 15),
-    ledgerSecret:
-      process.env.OROYA_LEDGER_SECRET ||
-      deriveLedgerSecret(`${required('POCKETBASE_SUPERUSER_PASSWORD')}:${required('POCKETBASE_URL')}`),
+    ledgerSecret: requiredRuntime('OROYA_LEDGER_SECRET'),
+    deviceTokenSecret: requiredRuntime('OROYA_DEVICE_TOKEN_SECRET'),
+    transferTwoFactorSecret: requiredAnyRuntime(['TWO_FACTOR_HMAC_SECRET', 'OROYA_TRANSFER_2FA_SECRET']),
+    deviceTokenTtlSeconds: numberOrDefault(process.env.OROYA_DEVICE_TOKEN_TTL_SECONDS, 14 * 24 * 60 * 60),
+    trustedProxyIps: parseList(process.env.OROYA_TRUSTED_PROXY_IPS || ''),
   },
   deviceSecurity: {
     monthlyRegisterLimit: numberOrDefault(process.env.DEVICE_MONTHLY_REGISTER_LIMIT, 3),
@@ -111,6 +136,7 @@ const config = {
   },
   admin: {
     notificationToken: optional('OROYA_ADMIN_NOTIFICATION_TOKEN'),
+    notificationTokenHashes: parseList(process.env.OROYA_ADMIN_NOTIFICATION_TOKEN_SHA256 || ''),
     toolEnabled: process.env.OROYA_ADMIN_TOOL_ENABLED === 'true',
   },
   pocketBase: {
@@ -124,14 +150,13 @@ const config = {
     ipnSecretKey: optional('NOWPAYMENTS_IPN_SECRET_KEY'),
     apiUrl: validateNowPaymentsApiUrl(optional('NOWPAYMENTS_API_URL') || 'https://api.nowpayments.io/v1'),
     ipnCallbackUrl: optional('NOWPAYMENTS_IPN_CALLBACK_URL'),
+    ipnMaxAgeSeconds: numberOrDefault(process.env.NOWPAYMENTS_IPN_MAX_AGE_SECONDS, 300),
+    ipnAllowPrivateNetwork: process.env.NOWPAYMENTS_IPN_ALLOW_PRIVATE === 'true',
+    ipnAllowedIps: parseList(process.env.NOWPAYMENTS_IPN_ALLOWED_IPS || ''),
   },
 };
 
 validateProductionConfig(config);
-
-function deriveLedgerSecret(value) {
-  return crypto.createHash('sha256').update(String(value)).digest('hex');
-}
 
 function validateProductionConfig(runtimeConfig) {
   if (process.env.NODE_ENV !== 'production') return;
@@ -139,17 +164,54 @@ function validateProductionConfig(runtimeConfig) {
   const requiredSecrets = [
     ['POCKETBASE_SUPERUSER_PASSWORD', runtimeConfig.pocketBase.superuserPassword],
     ['OROYA_LEDGER_SECRET', process.env.OROYA_LEDGER_SECRET],
+    ['OROYA_DEVICE_TOKEN_SECRET', process.env.OROYA_DEVICE_TOKEN_SECRET],
+    ['TWO_FACTOR_HMAC_SECRET', runtimeConfig.security.transferTwoFactorSecret],
+    ['NOWPAYMENTS_IPN_SECRET_KEY', runtimeConfig.nowPayments.ipnSecretKey],
   ];
 
   for (const [name, value] of requiredSecrets) {
-    if (!value || value === 'change-me' || String(value).length < 32) {
-      throw new Error(`${name} must be a strong production secret.`);
+    if (!isStrongSecret(value)) {
+      throw new Error(
+        `${name} must be a strong production secret (>=32 chars, mixed types, not a placeholder).`,
+      );
     }
+  }
+
+  if (
+    !isStrongSecret(runtimeConfig.admin.notificationToken) &&
+    !hasValidSha256Hash(runtimeConfig.admin.notificationTokenHashes)
+  ) {
+    throw new Error(
+      'OROYA_ADMIN_NOTIFICATION_TOKEN must be a strong production secret or OROYA_ADMIN_NOTIFICATION_TOKEN_SHA256 must contain a valid SHA-256 hash.',
+    );
+  }
+
+  if (runtimeConfig.security.allowUnsignedLedger) {
+    throw new Error('OROYA_LEDGER_ALLOW_UNSIGNED=true is forbidden in production.');
   }
 
   if (!runtimeConfig.security.localOnly && runtimeConfig.corsOrigins.includes('*')) {
     throw new Error('CORS_ORIGIN cannot be * when BACKEND_LOCAL_ONLY=false in production.');
   }
+
+  if (runtimeConfig.nowPayments.ipnAllowPrivateNetwork) {
+    throw new Error('NOWPAYMENTS_IPN_ALLOW_PRIVATE=true is forbidden in production.');
+  }
 }
 
-module.exports = { config, envPath };
+function isStrongSecret(value) {
+  if (value === undefined || value === null) return false;
+  const str = String(value);
+  if (str.length < 32) return false;
+  if (/^change-?me/i.test(str)) return false;
+  if (/^(.)\1+$/.test(str)) return false;
+  if (/^(password|secret|admin|test|dev|oroya)/i.test(str)) return false;
+  const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((re) => re.test(str));
+  return classes.length >= 2;
+}
+
+function hasValidSha256Hash(values) {
+  return Array.isArray(values) && values.some((value) => /^[a-f0-9]{64}$/i.test(String(value || '')));
+}
+
+module.exports = { config, envPath, validateProductionConfig };

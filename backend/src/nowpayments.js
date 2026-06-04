@@ -15,16 +15,31 @@ class NowPaymentsClient {
 
   async request(path, options = {}) {
     this.assertConfigured();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Number(process.env.NOWPAYMENTS_TIMEOUT_MS || 10000));
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: options.method || 'GET',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'x-api-key': this.apiKey,
-      },
-      body: options.body ? JSON.stringify(options.body) : undefined,
-    });
+    let response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, {
+        method: options.method || 'GET',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'x-api-key': this.apiKey,
+        },
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new HttpError(504, 'NOWPayments request timed out.', {
+          code: 'nowpayments_timeout',
+        });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     const text = await response.text();
     let data = null;
@@ -85,6 +100,15 @@ class NowPaymentsClient {
     const data = await this.request(`/min-amount?${params.toString()}`);
     const minimum = Number(data?.min_amount);
     return Number.isFinite(minimum) && minimum > 0 ? minimum : 0;
+  }
+
+  async getPaymentStatus(paymentId) {
+    const cleanId = String(paymentId || '').trim();
+    if (!cleanId) {
+      throw new HttpError(400, 'payment_id is required.');
+    }
+    const data = await this.request(`/payment/${encodeURIComponent(cleanId)}`);
+    return normalizePayment(data);
   }
 }
 

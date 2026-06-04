@@ -1,12 +1,21 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const logger = require('./logger');
 const { config } = require('./config');
-const { HttpError, getSafeErrorResponse, sendJson } = require('./http');
+const { HttpError, getSafeErrorResponse, getClientIp, sendJson } = require('./http');
 const { pocketBase } = require('./pocketbase');
+const { enforceRateLimit } = require('./rateLimit');
 const { createAdminNotification } = require('./routes/adminNotifications');
 const { createMessage, listMessages, openChat } = require('./routes/chats');
-const { login, logout, register } = require('./routes/auth');
+const {
+  confirmPasswordReset,
+  login,
+  logout,
+  register,
+  requestPasswordReset,
+  revokeMySessions,
+} = require('./routes/auth');
 const {
   acceptFriendRequest,
   createFriendRequest,
@@ -25,14 +34,17 @@ const {
   verifyPin,
 } = require('./routes/security');
 const { myTransactions } = require('./routes/transactions');
-const { sendTransfer } = require('./routes/transfers');
+const { sendTransfer, startTransferTwoFactorChallenge } = require('./routes/transfers');
 const { me, paymentProfile, updateMe } = require('./routes/users');
 const { myWallets } = require('./routes/wallets');
 
 const routes = new Map([
   ['POST /auth/register', register],
   ['POST /auth/login', login],
+  ['POST /auth/password-reset/request', requestPasswordReset],
+  ['POST /auth/password-reset/confirm', confirmPasswordReset],
   ['POST /auth/logout', logout],
+  ['POST /auth/sessions/revoke', revokeMySessions],
   ['GET /users/me', me],
   ['POST /users/me/update', updateMe],
   ['GET /users/payment-profile', paymentProfile],
@@ -58,6 +70,7 @@ const routes = new Map([
   ['POST /payments/create-deposit', createDeposit],
   ['POST /payments/nowpayments-webhook', nowPaymentsWebhook],
   ['POST /transfers/send', sendTransfer],
+  ['POST /transfers/two-factor/challenge', startTransferTwoFactorChallenge],
   ['GET /transactions/me', myTransactions],
 ]);
 
@@ -66,10 +79,10 @@ function applyCors(req, res) {
   if (allowedOrigin) {
     res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type,Authorization,X-Oroya-Device-Id,X-Oroya-Client-Platform,X-Oroya-App-Version,X-NOWPayments-Sig,X-Oroya-Admin-Token',
+    'Content-Type,Authorization,X-Oroya-Device-Id,X-Oroya-Device-Token,X-Oroya-Client-Platform,X-Oroya-App-Version,X-NOWPayments-Sig',
   );
   res.setHeader('Access-Control-Max-Age', '600');
   res.setHeader('Vary', 'Origin');
@@ -146,6 +159,15 @@ async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   enforceIngressPolicy(req, url);
 
+  if (req.method !== 'OPTIONS') {
+    await enforceRateLimit({
+      scope: 'http:ip',
+      identity: getClientIp(req) || 'unknown',
+      limit: req.method === 'GET' ? 900 : 600,
+      windowMs: 60 * 1000,
+    });
+  }
+
   if (req.method === 'GET' && url.pathname === '/admin/notifications-tool') {
     if (!config.admin.toolEnabled || process.env.NODE_ENV === 'production') {
       throw new HttpError(404, 'Endpoint not found.');
@@ -157,6 +179,11 @@ async function handleRequest(req, res) {
       'Content-Type': 'text/html; charset=utf-8',
       'Content-Length': Buffer.byteLength(html),
       'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'X-Frame-Options': 'DENY',
+      'Content-Security-Policy':
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     });
     res.end(html);
     return;
@@ -185,21 +212,26 @@ async function start() {
   const server = http.createServer((req, res) => {
     handleRequest(req, res).catch((error) => {
       const { status, body } = getSafeErrorResponse(error);
+      logger.warn('request_error', { status, code: body?.error?.code, message: error.message });
       sendJson(res, status, body);
     });
   });
 
   server.listen(config.port, config.host, () => {
-    console.log(`Oroya backend listening on http://${config.host}:${config.port}`);
-    console.log('Runtime configuration loaded.');
+    logger.info('backend_listening', {
+      host: config.host,
+      port: config.port,
+      local_only: config.security.localOnly,
+      env: process.env.NODE_ENV || 'development',
+    });
   });
 }
 
 if (require.main === module) {
   start().catch((error) => {
-    console.error(`Failed to start backend: ${error.message}`);
+    logger.fatal('startup_failed', { message: error.message });
     process.exit(1);
   });
 }
 
-module.exports = { start };
+module.exports = { handleRequest, start };

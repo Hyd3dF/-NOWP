@@ -10,13 +10,40 @@ const {
 } = require('../http');
 const { nowPayments } = require('../nowpayments');
 const { pocketBase } = require('../pocketbase');
+const { enforceRateLimit } = require('../rateLimit');
+const { verifyDeviceToken } = require('../deviceToken');
+const { verifyNowPaymentsSignature } = require('../webhookSignature');
+
+const DEPOSIT_MAX_PER_MIN = 10;
+const WEBHOOK_MAX_PER_MIN = 120;
+const WEBHOOK_NONCE_TTL_MS = 24 * 60 * 60 * 1000;
+const AMOUNT_UPPER_BOUND = 1_000_000;
+const DEPOSIT_MIN_CENTS = 1;
 
 function parseAmount(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) {
-    throw new HttpError(400, 'amount must be a positive number.');
+    throw new HttpError(400, 'amount must be a positive number.', {
+      code: 'invalid_amount',
+    });
   }
-  return amount;
+  if (amount > AMOUNT_UPPER_BOUND) {
+    throw new HttpError(400, 'amount exceeds the per-deposit ceiling.', {
+      code: 'amount_out_of_range',
+    });
+  }
+  if (!/^\d+(\.\d{1,2})?$/.test(String(value))) {
+    throw new HttpError(400, 'amount can have at most two decimal places.', {
+      code: 'invalid_amount_precision',
+    });
+  }
+  const rounded = Math.round(amount * 100) / 100;
+  if (rounded * 100 < DEPOSIT_MIN_CENTS) {
+    throw new HttpError(400, 'amount is below the minimum deposit unit.', {
+      code: 'invalid_amount',
+    });
+  }
+  return rounded;
 }
 
 function normalizeCode(value, field) {
@@ -37,49 +64,63 @@ function createReferenceId(userId) {
   return `dep_${userId}_${Date.now()}_${random}`;
 }
 
-function sortObject(value) {
-  if (Array.isArray(value)) {
-    return value.map(sortObject);
+function requireIdempotencyKey(req, body) {
+  const headerValue = req.headers['x-idempotency-key'];
+  const raw = String(body.idempotency_key || body.idempotencyKey || headerValue || '').trim();
+  if (!/^[A-Za-z0-9._:-]{16,120}$/.test(raw)) {
+    throw new HttpError(400, 'A valid idempotency key is required.', {
+      code: 'idempotency_key_required',
+    });
   }
-
-  if (value && typeof value === 'object') {
-    return Object.keys(value)
-      .sort()
-      .reduce((result, key) => {
-        result[key] = sortObject(value[key]);
-        return result;
-      }, {});
-  }
-
-  return value;
+  return raw;
 }
 
-function verifyNowPaymentsSignature(body, receivedSignature) {
-  if (!config.nowPayments.ipnSecretKey) {
-    throw new HttpError(500, 'NOWPayments IPN secret is not configured.');
+function createIdempotentReferenceId(userId, key) {
+  const digest = crypto
+    .createHash('sha256')
+    .update(`${userId}:${key}`)
+    .digest('hex')
+    .slice(0, 32);
+  return `dep_${digest}`;
+}
+
+function isWebhookSourceAllowed(context) {
+  const ip = String(context.ipAddress || '').trim();
+  if (!ip) return false;
+  if (config.nowPayments.ipnAllowedIps.length) {
+    return config.nowPayments.ipnAllowedIps.includes(ip);
   }
-
-  if (!receivedSignature) {
-    throw new HttpError(401, 'Missing NOWPayments signature.');
+  if (process.env.NODE_ENV === 'production') {
+    return false;
   }
+  if (!config.nowPayments.ipnAllowPrivateNetwork) return false;
+  return (
+    ip === '127.0.0.1' ||
+    ip === '::1' ||
+    ip === '::ffff:127.0.0.1' ||
+    ip.startsWith('10.') ||
+    ip.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(ip)
+  );
+}
 
-  const sortedBody = JSON.stringify(sortObject(body));
-  const expectedSignature = crypto
-    .createHmac('sha512', config.nowPayments.ipnSecretKey.trim())
-    .update(sortedBody)
-    .digest('hex');
+function isFreshWebhookTimestamp(timestamp, maxAgeSeconds) {
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts)) return false;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const drift = Math.abs(nowSeconds - ts);
+  return drift <= Number(maxAgeSeconds);
+}
 
-  const expected = Buffer.from(expectedSignature, 'hex');
-  const receivedValue = String(receivedSignature).trim();
-  if (!/^[a-f0-9]+$/i.test(receivedValue)) {
-    throw new HttpError(401, 'Invalid NOWPayments signature.');
+async function extractWebhookNonce(body, signature) {
+  const fromBody = body.nonce || body.idempotency_key || body.idempotencyKey;
+  if (typeof fromBody === 'string' && fromBody.length >= 8) {
+    return fromBody.slice(0, 200);
   }
-
-  const received = Buffer.from(receivedValue, 'hex');
-
-  if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
-    throw new HttpError(401, 'Invalid NOWPayments signature.');
+  if (typeof signature === 'string' && signature.length >= 8) {
+    return signature.slice(0, 200);
   }
+  return null;
 }
 
 function mapWebhookStatus(status) {
@@ -118,16 +159,86 @@ function getWebhookReferenceId(body) {
   return body.order_id ? String(body.order_id) : '';
 }
 
+async function requireDeviceTokenForUser(userId, context) {
+  if (!context.deviceToken) {
+    throw new HttpError(401, 'Device session token is required.', {
+      code: 'device_token_required',
+    });
+  }
+
+  let verified;
+  try {
+    verified = verifyDeviceToken(context.deviceToken, context);
+  } catch (error) {
+    throw new HttpError(401, 'Device session token is invalid.', {
+      code: 'device_token_invalid',
+    });
+  }
+  if (verified.userId !== userId) {
+    throw new HttpError(401, 'Device session token does not match the user.', {
+      code: 'device_token_mismatch',
+    });
+  }
+  const record = await pocketBase.findDeviceTokenByHash(verified.tokenHash);
+  if (!record || record.revoked_at) {
+    throw new HttpError(401, 'Device session has been revoked.', {
+      code: 'device_token_revoked',
+    });
+  }
+  return record;
+}
+
 async function createDeposit(req, res) {
   const token = getBearerToken(req);
   const user = await pocketBase.authenticateBearer(token);
   const body = await parseJsonBody(req);
   const requestContext = getRequestContext(req);
 
+  const deviceToken = await requireDeviceTokenForUser(user.id, requestContext);
+
+  await enforceRateLimit({
+    scope: 'payments:deposit',
+    identity: user.id,
+    limit: DEPOSIT_MAX_PER_MIN,
+    windowMs: 60 * 1000,
+  });
+
   const amount = parseAmount(body.amount);
   const currency = normalizeCode(body.currency, 'currency');
   const network = normalizeCode(body.network, 'network');
-  const referenceId = createReferenceId(user.id);
+  const idempotencyKey = requireIdempotencyKey(req, body);
+  const referenceId = createIdempotentReferenceId(user.id, idempotencyKey);
+
+  const existingIntent = await pocketBase.findPaymentIntent({ referenceId }).catch(() => null);
+  if (existingIntent) {
+    if (
+      existingIntent.user_id !== user.id ||
+      Number(existingIntent.amount) !== amount ||
+      String(existingIntent.currency || '').toLowerCase() !== currency ||
+      String(existingIntent.network || '').toLowerCase() !== network
+    ) {
+      throw new HttpError(409, 'Idempotency key conflicts with another deposit.', {
+        code: 'idempotency_key_conflict',
+      });
+    }
+    sendJson(res, 200, {
+      success: true,
+      idempotent_replay: true,
+      payment: {
+        id: existingIntent.id,
+        reference_id: existingIntent.reference_id,
+        payment_id: existingIntent.nowpayments_payment_id,
+        payment_address: existingIntent.payment_address,
+        payment_url: existingIntent.payment_url,
+        status: existingIntent.status,
+        amount: Number(existingIntent.amount || amount),
+        currency: existingIntent.currency,
+        network: existingIntent.network,
+        expires_at: existingIntent.expires_at,
+      },
+    });
+    return;
+  }
 
   try {
     const minimumAmount = await nowPayments.getMinimumAmount({
@@ -171,6 +282,8 @@ async function createDeposit(req, res) {
       status: payment.status,
       expiresAt: payment.expiresAt,
     });
+
+    pocketBase.touchDeviceToken(deviceToken.id).catch(() => {});
 
     await pocketBase.createAuditLog({
       userId: user.id,
@@ -243,7 +356,9 @@ function getCreateDepositErrorCode(error) {
 
 async function depositCurrencies(req, res) {
   const token = getBearerToken(req);
-  await pocketBase.authenticateBearer(token);
+  const user = await pocketBase.authenticateBearer(token);
+  const requestContext = getRequestContext(req);
+  await requireDeviceTokenForUser(user.id, requestContext);
 
   const currencies = await nowPayments.getMerchantCurrencies();
   sendJson(res, 200, {
@@ -253,11 +368,81 @@ async function depositCurrencies(req, res) {
 }
 
 async function nowPaymentsWebhook(req, res) {
-  const { body } = await parseRawJsonBody(req);
+  const { raw, body } = await parseRawJsonBody(req);
   const requestContext = getRequestContext(req);
   const signature = req.headers['x-nowpayments-sig'];
 
-  verifyNowPaymentsSignature(body, signature);
+  if (!isWebhookSourceAllowed(requestContext)) {
+    await pocketBase.createAuditLog({
+      action: 'payments.webhook_source_rejected',
+      ...requestContext,
+      metadata: {
+        ip_address: requestContext.ipAddress || '',
+      },
+    }).catch(() => {});
+    throw new HttpError(403, 'Webhook source is not allowed.', {
+      code: 'webhook_source_denied',
+    });
+  }
+
+  try {
+    verifyNowPaymentsSignature(raw, signature, config.nowPayments.ipnSecretKey);
+  } catch (error) {
+    if (error.code === 'ipn_secret_missing') {
+      throw new HttpError(500, 'NOWPayments IPN secret is not configured.');
+    }
+    if (error.code === 'signature_missing' || error.code === 'signature_format') {
+      throw new HttpError(401, error.message);
+    }
+    throw new HttpError(401, 'Invalid NOWPayments signature.');
+  }
+
+  const timestampCandidate = Number(body.timestamp || body.created_at || body.updated_at || 0);
+  if (timestampCandidate && !isFreshWebhookTimestamp(timestampCandidate, config.nowPayments.ipnMaxAgeSeconds)) {
+    await pocketBase.createAuditLog({
+      action: 'payments.webhook_stale_timestamp',
+      ...requestContext,
+      metadata: {
+        timestamp: timestampCandidate,
+        max_age_seconds: config.nowPayments.ipnMaxAgeSeconds,
+      },
+    }).catch(() => {});
+    throw new HttpError(401, 'Webhook timestamp is outside the allowed window.', {
+      code: 'webhook_timestamp_expired',
+    });
+  }
+
+  const nonce = await extractWebhookNonce(body, signature);
+  if (nonce) {
+    const recorded = await pocketBase
+      .recordWebhookNonce(nonce, 'nowpayments', WEBHOOK_NONCE_TTL_MS)
+      .catch((error) => {
+        if (error.status === 409) {
+          return { accepted: false, reason: 'duplicate' };
+        }
+        throw error;
+      });
+    if (!recorded.accepted) {
+      await pocketBase.createAuditLog({
+        action: 'payments.webhook_replay_rejected',
+        ...requestContext,
+        metadata: {
+          nonce_prefix: nonce.slice(0, 12),
+          reason: recorded.reason || 'unknown',
+        },
+      }).catch(() => {});
+      throw new HttpError(409, 'Webhook replay detected.', {
+        code: 'webhook_replay_detected',
+      });
+    }
+  }
+
+  await enforceRateLimit({
+    scope: 'payments:webhook',
+    identity: requestContext.ipAddress || 'unknown',
+    limit: WEBHOOK_MAX_PER_MIN,
+    windowMs: 60 * 1000,
+  });
 
   const paymentId = getWebhookPaymentId(body);
   const referenceId = getWebhookReferenceId(body);
@@ -292,34 +477,28 @@ async function nowPaymentsWebhook(req, res) {
     throw new HttpError(400, 'Webhook order_id does not match the payment intent.');
   }
 
-  const existingTransaction = await pocketBase.findTransactionByReference(transactionReference);
-
-  await pocketBase.updatePaymentIntent(intent.id, {
-    status,
-    nowpayments_payment_id: paymentId || intent.nowpayments_payment_id,
-  });
-
-  if (existingTransaction?.status === 'completed') {
-    await pocketBase.createAuditLog({
-      userId: intent.user_id,
-      action: 'payments.webhook_duplicate',
-      ...requestContext,
-      metadata: {
-        payment_intent_id: intent.id,
-        transaction_id: existingTransaction.id,
-        nowpayments_payment_id: paymentId,
-        reference_id: transactionReference,
-        status,
-      },
-    });
-
-    sendJson(res, 200, { success: true, received: true, duplicate: true });
-    return;
-  }
-
   if (isSuccessfulDepositStatus(status)) {
+    if (intent.credit_applied_at) {
+      await pocketBase.createAuditLog({
+        userId: intent.user_id,
+        action: 'payments.webhook_duplicate',
+        ...requestContext,
+        metadata: {
+          payment_intent_id: intent.id,
+          nowpayments_payment_id: paymentId,
+          reference_id: transactionReference,
+          status,
+        },
+      });
+      sendJson(res, 200, { success: true, received: true, duplicate: true });
+      return;
+    }
+
     const providerPriceAmount = Number(body.price_amount || 0);
-    if (providerPriceAmount && providerPriceAmount + 0.000001 < Number(intent.amount || 0)) {
+    const providerActuallyPaid = Number(body.actually_paid || 0);
+    const intentAmount = Number(intent.amount || 0);
+    const paidCheckValue = providerActuallyPaid > 0 ? providerActuallyPaid : providerPriceAmount;
+    if (paidCheckValue > 0 && paidCheckValue + 0.000001 < intentAmount) {
       await pocketBase.createAuditLog({
         userId: intent.user_id,
         action: 'payments.webhook_underpaid_not_credited',
@@ -328,60 +507,74 @@ async function nowPaymentsWebhook(req, res) {
           payment_intent_id: intent.id,
           nowpayments_payment_id: paymentId,
           reference_id: transactionReference,
-          intent_amount: Number(intent.amount || 0),
+          intent_amount: intentAmount,
           provider_price_amount: providerPriceAmount,
+          provider_actually_paid: providerActuallyPaid,
         },
       });
       sendJson(res, 200, { success: true, received: true, status: 'underpaid_not_credited' });
       return;
     }
 
-    const amount = Number(intent.amount || 0);
-    if (!Number.isFinite(amount) || amount <= 0) {
+    if (!Number.isFinite(intentAmount) || intentAmount <= 0) {
       throw new HttpError(400, 'Payment intent amount is invalid.');
+    }
+
+    const claim = await pocketBase.claimPaymentIntentCredit(intent.id);
+    if (!claim.claimed) {
+      await pocketBase.createAuditLog({
+        userId: intent.user_id,
+        action: 'payments.webhook_duplicate',
+        ...requestContext,
+        metadata: {
+          payment_intent_id: intent.id,
+          nowpayments_payment_id: paymentId,
+          reference_id: transactionReference,
+          status,
+        },
+      });
+      sendJson(res, 200, { success: true, received: true, duplicate: true });
+      return;
     }
 
     let transaction;
     try {
-      transaction = existingTransaction || (await pocketBase.createDepositTransaction({
-        userId: intent.user_id,
-        amount,
-        currency: intent.currency,
-        status: 'pending',
-        providerPaymentId: paymentId || intent.nowpayments_payment_id,
-        walletAddress: intent.payment_address,
-        network: intent.network,
-        referenceId: transactionReference,
-        note: `NOWPayments deposit ${providerStatus}`,
-      }));
+      transaction = await pocketBase.findTransactionByReference(transactionReference);
+      if (!transaction) {
+        transaction = await pocketBase.createDepositTransaction({
+          userId: intent.user_id,
+          amount: intentAmount,
+          currency: intent.currency,
+          status: 'pending',
+          providerPaymentId: paymentId || intent.nowpayments_payment_id,
+          walletAddress: intent.payment_address,
+          network: intent.network,
+          referenceId: transactionReference,
+          note: `NOWPayments deposit ${providerStatus}`,
+        });
+      }
     } catch (error) {
       const duplicate = await pocketBase.findTransactionByReference(transactionReference);
       if (duplicate) {
-        await pocketBase.createAuditLog({
-          userId: intent.user_id,
-          action: 'payments.webhook_duplicate',
-          ...requestContext,
-          metadata: {
-            payment_intent_id: intent.id,
-            transaction_id: duplicate.id,
-            nowpayments_payment_id: paymentId,
-            reference_id: transactionReference,
-            status,
-          },
-        });
-        sendJson(res, 200, { success: true, received: true, duplicate: true });
-        return;
+        transaction = duplicate;
+      } else {
+        throw error;
       }
-      throw error;
     }
 
+    const completedTransaction = await pocketBase.completeTransaction(transaction);
+    await pocketBase.markTransactionCreditApplied(completedTransaction.id);
+
     const wallet = await pocketBase.ensureWallet(intent.user_id, intent.currency);
-    const updatedWallet = await pocketBase.updateWalletBalance(wallet, amount);
+    const refreshedWallet = await pocketBase.getWalletById(wallet.id) || wallet;
+    const updatedWallet = await pocketBase.reconcileWalletBalance(
+      refreshedWallet,
+      'payments.webhook_deposit_completed',
+    );
 
     await pocketBase.updatePaymentIntent(intent.id, {
       status: 'completed',
     });
-    await pocketBase.completeTransaction(transaction);
 
     await pocketBase.createAuditLog({
       userId: intent.user_id,
@@ -389,9 +582,9 @@ async function nowPaymentsWebhook(req, res) {
       ...requestContext,
       metadata: {
         payment_intent_id: intent.id,
-        transaction_id: transaction.id,
+        transaction_id: completedTransaction.id,
         wallet_id: updatedWallet.id,
-        amount,
+        amount: intentAmount,
         currency: intent.currency,
         nowpayments_payment_id: paymentId,
         reference_id: transactionReference,
@@ -403,7 +596,35 @@ async function nowPaymentsWebhook(req, res) {
     return;
   }
 
+  await pocketBase.updatePaymentIntent(intent.id, {
+    status,
+    nowpayments_payment_id: paymentId || intent.nowpayments_payment_id,
+  });
+
   if (isTerminalFailureStatus(status)) {
+    let reversalTransaction = null;
+    if (intent.credit_applied_at) {
+      const reversalReference = `rev_${transactionReference}_${status}`.slice(0, 120);
+      reversalTransaction = await pocketBase.findTransactionByReference(reversalReference);
+      if (!reversalTransaction) {
+        reversalTransaction = await pocketBase.createDepositReversalTransaction({
+          userId: intent.user_id,
+          amount: Number(intent.amount || 0),
+          currency: intent.currency,
+          network: intent.network,
+          providerPaymentId: paymentId || intent.nowpayments_payment_id,
+          referenceId: reversalReference,
+          note: `NOWPayments deposit reversal ${status}`,
+        });
+      }
+      const wallet = await pocketBase.ensureWallet(intent.user_id, intent.currency);
+      const refreshedWallet = await pocketBase.getWalletById(wallet.id) || wallet;
+      await pocketBase.reconcileWalletBalance(
+        refreshedWallet,
+        'payments.webhook_deposit_reversed',
+      );
+    }
+
     await pocketBase.createAuditLog({
       userId: intent.user_id,
       action: 'payments.webhook_deposit_not_completed',
@@ -414,6 +635,7 @@ async function nowPaymentsWebhook(req, res) {
         reference_id: transactionReference,
         provider_status: providerStatus,
         status,
+        reversal_transaction_id: reversalTransaction?.id || '',
       },
     });
 
@@ -438,7 +660,11 @@ async function nowPaymentsWebhook(req, res) {
 }
 
 module.exports = {
+  createIdempotentReferenceId,
   createDeposit,
   depositCurrencies,
   nowPaymentsWebhook,
+  isWebhookSourceAllowed,
+  isFreshWebhookTimestamp,
+  requireIdempotencyKey,
 };

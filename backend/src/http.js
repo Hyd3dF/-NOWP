@@ -6,6 +6,9 @@ class HttpError extends Error {
   }
 }
 
+const net = require('node:net');
+const { config } = require('./config');
+
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_HEADER_CHARS = 512;
 const PUBLIC_DETAIL_KEYS = new Set([
@@ -62,14 +65,15 @@ function parseJsonBody(req) {
 
 function parseRawJsonBody(req) {
   return new Promise((resolve, reject) => {
-    let raw = '';
+    const chunks = [];
     let byteLength = 0;
     let rejected = false;
 
     req.on('data', (chunk) => {
       if (rejected) return;
-      raw += chunk;
-      byteLength += chunk.length;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      chunks.push(buffer);
+      byteLength += buffer.length;
       if (byteLength > MAX_BODY_BYTES) {
         rejected = true;
         req.destroy();
@@ -78,13 +82,14 @@ function parseRawJsonBody(req) {
     });
 
     req.on('end', () => {
-      if (!raw) {
-        resolve({ raw: '', body: {} });
+      const rawBuffer = byteLength ? Buffer.concat(chunks, byteLength) : Buffer.alloc(0);
+      if (rawBuffer.length === 0) {
+        resolve({ raw: rawBuffer, body: {} });
         return;
       }
 
       try {
-        resolve({ raw, body: JSON.parse(raw) });
+        resolve({ raw: rawBuffer, body: JSON.parse(rawBuffer.toString('utf8')) });
       } catch {
         reject(new HttpError(400, 'Invalid JSON body.'));
       }
@@ -101,12 +106,17 @@ function getBearerToken(req) {
 }
 
 function getClientIp(req) {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  const firstForwarded = Array.isArray(forwardedFor)
-    ? forwardedFor[0]
-    : String(firstOrEmpty(forwardedFor)).split(',')[0];
+  const remoteAddress = normalizeIp(req.socket.remoteAddress || '');
+  if (isTrustedProxy(remoteAddress)) {
+    const forwardedFor = req.headers['x-forwarded-for'];
+    const firstForwarded = Array.isArray(forwardedFor)
+      ? forwardedFor[0]
+      : String(firstOrEmpty(forwardedFor)).split(',')[0];
+    const forwardedIp = normalizeIp(sanitizeHeaderValue(firstForwarded, 80));
+    if (isValidIp(forwardedIp)) return forwardedIp;
+  }
 
-  return sanitizeHeaderValue(firstForwarded || req.socket.remoteAddress || '', 80);
+  return remoteAddress;
 }
 
 function getRequestContext(req) {
@@ -115,6 +125,7 @@ function getRequestContext(req) {
     deviceInfo: sanitizeHeaderValue(req.headers['user-agent'], 300),
     deviceId: sanitizeHeaderValue(req.headers['x-oroya-device-id'], MAX_HEADER_CHARS),
     devicePlatform: sanitizeHeaderValue(req.headers['x-oroya-client-platform'], 40),
+    deviceToken: sanitizeHeaderValue(req.headers['x-oroya-device-token'], 1024),
   };
 }
 
@@ -129,6 +140,21 @@ function sanitizeHeaderValue(value, maxLength) {
 function firstOrEmpty(value) {
   if (Array.isArray(value)) return value[0] || '';
   return value || '';
+}
+
+function normalizeIp(value) {
+  const clean = sanitizeHeaderValue(value, 80);
+  if (clean.startsWith('::ffff:')) return clean.slice('::ffff:'.length);
+  return clean;
+}
+
+function isValidIp(value) {
+  return net.isIP(value) !== 0;
+}
+
+function isTrustedProxy(remoteAddress) {
+  const configured = (config.security.trustedProxyIps || []).map((item) => normalizeIp(item)).filter(Boolean);
+  return configured.includes(remoteAddress);
 }
 
 function getSafeErrorResponse(error) {
@@ -165,6 +191,7 @@ function getPublicDetails(details) {
 module.exports = {
   HttpError,
   getBearerToken,
+  getClientIp,
   getRequestContext,
   getSafeErrorResponse,
   parseJsonBody,

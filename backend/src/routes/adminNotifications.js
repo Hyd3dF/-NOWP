@@ -1,20 +1,42 @@
 const crypto = require('node:crypto');
-const { HttpError, parseJsonBody, sendJson } = require('../http');
+const { HttpError, getRequestContext, parseJsonBody, sendJson } = require('../http');
 const { config } = require('../config');
+const { enforceRateLimit } = require('../rateLimit');
 const { pocketBase } = require('../pocketbase');
 
 const adminTokenFailures = new Map();
 const ADMIN_TOKEN_WINDOW_MS = 10 * 60 * 1000;
 const ADMIN_TOKEN_MAX_FAILURES = 8;
+const ADMIN_REQUEST_MAX_PER_MIN = 30;
+const ADMIN_TIMESTAMP_WINDOW_SECONDS = 300;
 
 function pickString(body, field) {
   return typeof body[field] === 'string' ? body[field].trim() : '';
 }
 
-function requireAdminNotificationToken(req) {
-  if (!config.admin.notificationToken) {
+function isLocalAddress(ip) {
+  if (!ip) return false;
+  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return true;
+  if (ip.startsWith('10.')) return true;
+  if (ip.startsWith('192.168.')) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+  if (ip.startsWith('fe80:')) return true;
+  if (ip.startsWith('fc') || ip.startsWith('fd')) return true;
+  return false;
+}
+
+async function requireAdminNotificationToken(req) {
+  if (!config.admin.notificationToken && !config.admin.notificationTokenHashes.length) {
     throw new HttpError(503, 'Admin notifications are not configured.', {
       code: 'admin_notifications_disabled',
+    });
+  }
+
+  const requestContext = getRequestContext(req);
+  const ipAddress = requestContext.ipAddress || '';
+  if (!isLocalAddress(ipAddress) && process.env.NODE_ENV === 'production') {
+    throw new HttpError(403, 'Admin notifications are only accepted from local networks.', {
+      code: 'admin_source_rejected',
     });
   }
 
@@ -22,8 +44,15 @@ function requireAdminNotificationToken(req) {
   const key = getAdminFailureKey(req);
   assertAdminTokenNotThrottled(key);
 
-  if (!constantTimeEqual(provided, config.admin.notificationToken)) {
+  if (!isValidAdminToken(provided)) {
     recordAdminTokenFailure(key);
+    await pocketBase.createAuditLog({
+      action: 'admin.notification_token_invalid',
+      ...requestContext,
+      metadata: {
+        key_prefix: key.slice(0, 8),
+      },
+    }).catch(() => {});
     throw new HttpError(401, 'Admin token is invalid.', {
       code: 'admin_token_invalid',
     });
@@ -33,7 +62,16 @@ function requireAdminNotificationToken(req) {
 }
 
 async function createAdminNotification(req, res) {
-  requireAdminNotificationToken(req);
+  await requireAdminNotificationToken(req);
+  const requestContext = getRequestContext(req);
+
+  await enforceRateLimit({
+    scope: 'admin:notifications',
+    identity: requestContext.ipAddress || 'unknown',
+    limit: ADMIN_REQUEST_MAX_PER_MIN,
+    windowMs: 60 * 1000,
+  });
+
   const body = await parseJsonBody(req);
 
   const title = pickString(body, 'title');
@@ -44,6 +82,12 @@ async function createAdminNotification(req, res) {
     });
   }
 
+  if (title.length > 200 || message.length > 4000) {
+    throw new HttpError(400, 'Notification payload is too large.', {
+      code: 'notification_payload_too_large',
+    });
+  }
+
   const notification = await pocketBase.createAdminNotification({
     title,
     body: message,
@@ -51,9 +95,20 @@ async function createAdminNotification(req, res) {
     imageUrl: pickString(body, 'image_url') || pickString(body, 'imageUrl'),
     icon: pickString(body, 'icon'),
     linkUrl: pickString(body, 'link_url') || pickString(body, 'linkUrl'),
-    metadata: body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
-      ? body.metadata
-      : {},
+    metadata:
+      body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+        ? body.metadata
+        : {},
+  });
+
+  await pocketBase.createAuditLog({
+    action: 'admin.notification_created',
+    ...requestContext,
+    metadata: {
+      notification_id: notification.id,
+      title_length: title.length,
+      body_length: message.length,
+    },
   });
 
   sendJson(res, 201, {
@@ -75,6 +130,15 @@ function constantTimeEqual(a, b) {
   const left = Buffer.from(crypto.createHash('sha256').update(String(a || '')).digest('hex'));
   const right = Buffer.from(crypto.createHash('sha256').update(String(b || '')).digest('hex'));
   return crypto.timingSafeEqual(left, right);
+}
+
+function isValidAdminToken(provided) {
+  if (!provided) return false;
+  if (config.admin.notificationTokenHashes.length) {
+    const digest = crypto.createHash('sha256').update(String(provided)).digest('hex');
+    return config.admin.notificationTokenHashes.some((hash) => constantTimeEqual(digest, hash));
+  }
+  return constantTimeEqual(provided, config.admin.notificationToken);
 }
 
 function getAdminFailureKey(req) {

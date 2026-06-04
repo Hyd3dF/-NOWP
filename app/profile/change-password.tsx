@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { changePassword } from '@/services/api/security';
 import { ApiError } from '@/services/api/client';
+import { useAuthStore } from '@/stores/authStore';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing } from '@/theme/spacing';
@@ -26,6 +27,7 @@ export default function ChangePasswordScreen() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const invalidateSession = useAuthStore((state) => state.invalidateSession);
 
   const submit = async () => {
     setError('');
@@ -46,9 +48,10 @@ export default function ChangePasswordScreen() {
     setIsLoading(true);
     try {
       await changePassword(currentPassword, newPassword);
+      await invalidateSession();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      Alert.alert('Password Changed', 'Your login password has been updated.', [
-        { text: 'OK', onPress: () => router.back() },
+      Alert.alert('Password Changed', 'Please sign in again with your new password.', [
+        { text: 'OK', onPress: () => router.replace('/(auth)/login') },
       ]);
     } catch (error) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});

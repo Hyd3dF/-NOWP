@@ -1,5 +1,9 @@
 const { HttpError, getBearerToken, getRequestContext, parseJsonBody, sendJson } = require('../http');
 const { pocketBase } = require('../pocketbase');
+const { enforceRateLimit } = require('../rateLimit');
+
+const SECURITY_WRITE_MAX_PER_5_MIN = 20;
+const SECURITY_PIN_MAX_PER_5_MIN = 10;
 
 function pickString(body, field) {
   return typeof body[field] === 'string' ? body[field].trim() : '';
@@ -13,6 +17,15 @@ async function requireSecurityPin(user, body) {
     });
   }
   await pocketBase.verifyUserPin(user, pin);
+}
+
+async function enforceSecurityRateLimit(userId, action, limit = SECURITY_WRITE_MAX_PER_5_MIN) {
+  await enforceRateLimit({
+    scope: `security:${action}`,
+    identity: userId,
+    limit,
+    windowMs: 5 * 60 * 1000,
+  });
 }
 
 async function securityOverview(req, res) {
@@ -40,6 +53,7 @@ async function updateBiometricLock(req, res) {
   const body = await parseJsonBody(req);
   const requestContext = getRequestContext(req);
   const enabled = Boolean(body.enabled);
+  await enforceSecurityRateLimit(user.id, 'biometric-lock');
   await requireSecurityPin(user, body);
 
   const record = await pocketBase.upsertBiometricLock(user.id, requestContext, enabled);
@@ -65,6 +79,7 @@ async function updateTwoFactor(req, res) {
   const body = await parseJsonBody(req);
   const requestContext = getRequestContext(req);
   const enabled = Boolean(body.enabled);
+  await enforceSecurityRateLimit(user.id, 'two-factor');
   await requireSecurityPin(user, body);
 
   const record = await pocketBase.upsertTwoFactorSettings(user.id, enabled);
@@ -92,6 +107,7 @@ async function verifyPin(req, res) {
   const body = await parseJsonBody(req);
   const requestContext = getRequestContext(req);
   const pin = pickString(body, 'pin');
+  await enforceSecurityRateLimit(user.id, 'verify-pin', SECURITY_PIN_MAX_PER_5_MIN);
 
   if (!/^\d{4}$/.test(pin)) {
     throw new HttpError(400, 'PIN must be 4 digits.', {
@@ -119,6 +135,7 @@ async function changePin(req, res) {
   const requestContext = getRequestContext(req);
   const currentPin = pickString(body, 'current_pin') || pickString(body, 'currentPin');
   const newPin = pickString(body, 'new_pin') || pickString(body, 'newPin');
+  await enforceSecurityRateLimit(user.id, 'change-pin', SECURITY_PIN_MAX_PER_5_MIN);
 
   if (!/^\d{4}$/.test(currentPin) || !/^\d{4}$/.test(newPin)) {
     throw new HttpError(400, 'PIN values must be 4 digits.', {
@@ -157,6 +174,7 @@ async function changePassword(req, res) {
   const requestContext = getRequestContext(req);
   const currentPassword = pickString(body, 'current_password') || pickString(body, 'currentPassword');
   const newPassword = pickString(body, 'new_password') || pickString(body, 'newPassword');
+  await enforceSecurityRateLimit(user.id, 'change-password', SECURITY_PIN_MAX_PER_5_MIN);
 
   if (!currentPassword || !newPassword) {
     throw new HttpError(400, 'Current password and new password are required.', {
@@ -167,6 +185,12 @@ async function changePassword(req, res) {
   let result;
   try {
     result = await pocketBase.changePassword(user, currentPassword, newPassword);
+    await pocketBase.revokeAllDeviceTokensForUser(user.id, 'password_change');
+    await pocketBase.revokeBearerTokensForUser(user.id, 'password_change');
+    await pocketBase.revokeBearerToken(token, {
+      userId: user.id,
+      reason: 'password_change',
+    });
   } catch (error) {
     if (error.status === 401) {
       throw new HttpError(400, 'Current password is incorrect.', {
