@@ -6,14 +6,15 @@ import {
   StyleSheet,
   Text,
   View,
+  Pressable,
+  TextInput,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius } from '@/theme/spacing';
-import { HeaderBar } from '@/components/shared/HeaderBar';
-import { Input } from '@/components/ui/Input';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { useFriendStore } from '@/stores/friendStore';
@@ -23,6 +24,7 @@ import type { FriendUser } from '@/services/api/social';
 
 export default function AddFriendScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ q?: string }>();
   const { requests, isRequestsLoading, fetchRequests, sendRequest, acceptRequest } = useFriendStore();
   const [query, setQuery] = useState(params.q ? String(params.q) : '');
@@ -105,62 +107,98 @@ export default function AddFriendScreen() {
     }
   };
 
-  const renderUser = ({ item }: { item: FriendUser }) => (
-    <View style={styles.userRow}>
-      <View style={styles.userLeft}>
-        <Avatar name={item.displayName} uri={item.avatarUrl} size={48} />
-        <View style={styles.userText}>
-          <Text style={styles.userName}>{item.displayName}</Text>
-          <Text style={styles.userTag}>#{item.oroyaId}</Text>
+  const renderUser = ({ item, index }: { item: FriendUser; index: number }) => {
+    const isLast = index === results.length - 1;
+    return (
+      <View
+        style={[
+          styles.userRow,
+          !isLast && styles.rowDivider,
+        ]}
+      >
+        <View style={styles.userLeft}>
+          <Avatar name={item.displayName} uri={item.avatarUrl} size={44} />
+          <View style={styles.userText}>
+            <Text style={styles.userName}>{item.displayName}</Text>
+            <Text style={styles.userTag}>#{item.oroyaId}</Text>
+          </View>
         </View>
+        <Button
+          title="Add"
+          size="sm"
+          loading={busyId === item.id}
+          onPress={() => handleSendRequest(item)}
+        />
       </View>
-      <Button
-        title="Add"
-        size="sm"
-        loading={busyId === item.id}
-        onPress={() => handleSendRequest(item)}
-      />
-    </View>
-  );
+    );
+  };
 
   return (
     <View style={styles.container}>
-      <HeaderBar title="Add Friend" showBack onBack={() => router.back()} />
+      {/* ─── Header ─── */}
+      <View style={[styles.headerContainer, { paddingTop: insets.top + 12 }]}>
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.7 }]}
+          hitSlop={8}
+        >
+          <Ionicons name="chevron-back" size={24} color={colors.light.textPrimary} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Add Friend</Text>
+        <View style={{ width: 44 }} />
+      </View>
 
-      <View style={styles.content}>
+      <View style={{ flex: 1 }}>
+        {/* Thinner Search Bar with Rounded Corners */}
+        <View style={styles.searchContainer}>
+          <View style={styles.searchBar}>
+            <Ionicons name="search-outline" size={18} color={colors.light.textSecondary} style={styles.searchIcon} />
+            <TextInput
+              placeholder="Oroya ID or username"
+              placeholderTextColor={colors.light.textTertiary}
+              value={query}
+              onChangeText={setQuery}
+              autoCapitalize="none"
+              style={styles.searchInput}
+            />
+          </View>
+        </View>
+
         <Text style={styles.helperText}>
           Search by Oroya ID to make sure you are adding the right person.
         </Text>
-        <View style={styles.searchContainer}>
-          <Input
-            placeholder="Oroya ID or username"
-            value={query}
-            onChangeText={setQuery}
-            autoCapitalize="none"
-            icon={<Ionicons name="search-outline" size={20} color={colors.light.textTertiary} />}
-          />
-        </View>
 
         {incomingRequests.length > 0 ? (
-          <View style={styles.requestsCard}>
-            <Text style={styles.sectionTitle}>Friend Requests</Text>
-            {incomingRequests.map((request) => (
-              <View key={request.id} style={styles.requestRow}>
-                <View style={styles.userLeft}>
-                  <Avatar name={request.user.displayName} uri={request.user.avatarUrl} size={44} />
-                  <View style={styles.userText}>
-                    <Text style={styles.userName}>{request.user.displayName}</Text>
-                    <Text style={styles.userTag}>#{request.user.oroyaId}</Text>
+          <View style={{ marginBottom: spacing.md }}>
+            <Text style={styles.sectionLabel}>Friend Requests</Text>
+            <View style={styles.card}>
+              {incomingRequests.map((request, index) => {
+                const isLast = index === incomingRequests.length - 1;
+                return (
+                  <View
+                    key={request.id}
+                    style={[
+                      styles.requestRow,
+                      !isLast && styles.rowDivider,
+                    ]}
+                  >
+                    <View style={styles.userLeft}>
+                      <Avatar name={request.user.displayName} uri={request.user.avatarUrl} size={44} />
+                      <View style={styles.userText}>
+                        <Text style={styles.userName}>{request.user.displayName}</Text>
+                        <Text style={styles.userTag}>#{request.user.oroyaId}</Text>
+                      </View>
+                    </View>
+                    <Button
+                      title="Accept"
+                      size="sm"
+                      loading={busyId === request.id}
+                      onPress={() => handleAcceptRequest(request)}
+                    />
                   </View>
-                </View>
-                <Button
-                  title="Accept"
-                  size="sm"
-                  loading={busyId === request.id}
-                  onPress={() => handleAcceptRequest(request)}
-                />
-              </View>
-            ))} 
+                );
+              })} 
+            </View>
           </View>
         ) : null}
 
@@ -173,7 +211,7 @@ export default function AddFriendScreen() {
           </View>
         ) : null}
 
-        <Text style={styles.sectionTitle}>
+        <Text style={styles.sectionLabel}>
           {query.trim().length >= 3 ? 'Search Results' : 'Find by Oroya ID'}
         </Text>
 
@@ -198,6 +236,7 @@ export default function AddFriendScreen() {
           keyExtractor={(item) => item.id}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          contentContainerStyle={styles.listContent}
           renderItem={renderUser}
           ListEmptyComponent={
             !isSearching ? (
@@ -235,52 +274,101 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.light.background,
   },
-  content: {
-    flex: 1,
-    paddingHorizontal: spacing.xl,
+
+  // ─── Header ───
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.background,
   },
+  backButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.light.textPrimary,
+  },
+
+  // ─── Helper Text ───
   helperText: {
-    ...typography.bodySm,
-    color: colors.light.textSecondary,
-    marginTop: spacing.sm,
+    ...typography.caption,
+    color: colors.light.textTertiary,
+    paddingHorizontal: spacing.xl,
+    marginTop: spacing.xs,
+    lineHeight: 16,
   },
+
+  // ─── Search Bar ───
   searchContainer: {
+    paddingHorizontal: spacing.lg,
     marginVertical: spacing.sm,
   },
-  sectionTitle: {
-    ...typography.bodySm,
-    color: colors.light.textSecondary,
-    fontWeight: '700',
-    marginVertical: spacing.md,
-  },
-  requestsCard: {
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.light.surface,
-    borderWidth: 1,
-    borderColor: colors.light.borderLight,
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.light.borderLight,
+    height: 38,
+    borderRadius: 10,
     paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
+  },
+  searchIcon: {
+    marginRight: spacing.xs,
+  },
+  searchInput: {
+    flex: 1,
+    ...typography.bodySm,
+    color: colors.light.textPrimary,
+    paddingVertical: 0,
+  },
+
+  // ─── Sections ───
+  sectionLabel: {
+    ...typography.caption,
+    color: colors.light.textTertiary,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginTop: spacing.lg,
     marginBottom: spacing.sm,
+    paddingHorizontal: spacing.xl,
+  },
+
+  // ─── Card & Rows ───
+  card: {
+    backgroundColor: colors.light.surface,
+    marginHorizontal: spacing.lg,
+    borderRadius: 12,
+    overflow: 'hidden',
   },
   requestRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: spacing.sm,
+    paddingVertical: 12,
+    paddingHorizontal: spacing.lg,
   },
   outgoingBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.light.warningLight,
-    padding: spacing.sm,
+    marginHorizontal: spacing.lg,
+    borderRadius: 8,
+    backgroundColor: colors.light.warningLight + '50',
+    padding: spacing.md,
     marginBottom: spacing.sm,
   },
   outgoingText: {
     ...typography.caption,
     color: colors.light.warning,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   loadingRow: {
     flexDirection: 'row',
@@ -297,9 +385,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.light.errorLight,
-    padding: spacing.sm,
+    marginHorizontal: spacing.lg,
+    borderRadius: 8,
+    backgroundColor: colors.light.errorLight + '50',
+    padding: spacing.md,
     marginBottom: spacing.sm,
   },
   errorText: {
@@ -307,13 +396,21 @@ const styles = StyleSheet.create({
     color: colors.light.error,
     flex: 1,
   },
+
+  // ─── User Results List (Grouped inside a clean Card) ───
+  listContent: {
+    paddingBottom: 40,
+  },
   userRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderColor: colors.light.borderLight,
+    paddingVertical: 12,
+    paddingHorizontal: spacing.xl,
+  },
+  rowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.border,
   },
   userLeft: {
     flex: 1,
@@ -327,26 +424,31 @@ const styles = StyleSheet.create({
   userName: {
     ...typography.bodySm,
     color: colors.light.textPrimary,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   userTag: {
     ...typography.caption,
     color: colors.light.textTertiary,
     marginTop: 2,
   },
+
+  // ─── Empty state ───
   emptyContainer: {
     paddingVertical: spacing['3xl'],
     alignItems: 'center',
   },
   emptyTitle: {
     ...typography.bodySm,
-    color: colors.light.textPrimary,
-    fontWeight: '700',
+    color: colors.light.textSecondary,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   emptyText: {
-    ...typography.bodySm,
+    ...typography.caption,
     color: colors.light.textTertiary,
     textAlign: 'center',
-    marginTop: spacing.xs,
+    marginTop: 6,
+    lineHeight: 16,
+    paddingHorizontal: spacing.xl,
   },
 });

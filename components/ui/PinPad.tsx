@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View, ViewStyle } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { colors } from '../../theme/colors';
 import { typography } from '../../theme/typography';
@@ -11,6 +12,7 @@ interface PinPadProps {
   subtitle?: string;
   error?: string;
   length?: number;
+  style?: ViewStyle;
 }
 
 const KEYS = [
@@ -26,6 +28,7 @@ export const PinPad: React.FC<PinPadProps> = ({
   subtitle,
   error,
   length = 4,
+  style,
 }) => {
   const [pin, setPin] = useState('');
 
@@ -62,12 +65,14 @@ export const PinPad: React.FC<PinPadProps> = ({
   );
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, style]}>
       {/* Title & Subtitle */}
-      <View style={styles.header}>
-        <Text style={styles.title}>{title}</Text>
-        {subtitle && <Text style={styles.subtitle}>{subtitle}</Text>}
-      </View>
+      {title ? (
+        <View style={styles.header}>
+          <Text style={styles.title}>{title}</Text>
+          {subtitle && <Text style={styles.subtitle}>{subtitle}</Text>}
+        </View>
+      ) : null}
 
       {/* PIN Dots */}
       <View style={styles.dotsContainer}>
@@ -102,7 +107,7 @@ export const PinPad: React.FC<PinPadProps> = ({
                 ]}
               >
                 {key === 'backspace' ? (
-                  <Text style={styles.backspaceText}>⌫</Text>
+                  <Ionicons name="backspace-outline" size={24} color={colors.light.textSecondary} />
                 ) : (
                   <Text style={styles.keyText}>{key}</Text>
                 )}
@@ -145,20 +150,16 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xl,
   },
   dot: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: colors.light.border,
-    backgroundColor: 'transparent',
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#E5E5EA',
   },
   dotFilled: {
     backgroundColor: colors.light.primary,
-    borderColor: colors.light.primary,
   },
   dotError: {
-    borderColor: colors.light.error,
-    backgroundColor: 'transparent',
+    backgroundColor: colors.light.error,
   },
   errorText: {
     fontSize: typography.bodySm.fontSize,
@@ -174,25 +175,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     marginBottom: spacing.md,
+    flexShrink: 0,
   },
   key: {
-    width: 76,
-    height: 76,
-    borderRadius: borderRadius.full,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     alignItems: 'center',
     justifyContent: 'center',
-    marginHorizontal: spacing.sm,
-    backgroundColor: colors.light.background,
+    marginHorizontal: spacing.md,
+    backgroundColor: 'transparent',
+    flexShrink: 0,
   },
   keyEmpty: {
     backgroundColor: 'transparent',
+    flexShrink: 0,
   },
   keyPressed: {
-    backgroundColor: colors.light.border,
+    backgroundColor: '#E5E5EA',
   },
   keyText: {
     fontSize: 28,
-    fontWeight: '500',
+    fontWeight: '400',
     color: colors.light.textPrimary,
   },
   backspaceText: {

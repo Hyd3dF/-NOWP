@@ -5,19 +5,19 @@ import {
   View,
   ScrollView,
   Alert,
+  Pressable,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius } from '@/theme/spacing';
-import { HeaderBar } from '@/components/shared/HeaderBar';
-import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 
 export default function VerificationScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [level2Status, setLevel2Status] = useState<'none' | 'pending' | 'verified'>('none');
 
   const handleStartVerification = () => {
@@ -39,28 +39,39 @@ export default function VerificationScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <HeaderBar title="Identity Verification" showBack onBack={() => router.back()} />
+    <View style={styles.container}>
+      {/* ─── Header ─── */}
+      <View style={[styles.headerContainer, { paddingTop: insets.top + 12 }]}>
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.7 }]}
+          hitSlop={8}
+        >
+          <Ionicons name="chevron-back" size={24} color={colors.light.textPrimary} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Identity Verification</Text>
+        <View style={{ width: 44 }} />
+      </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Status Header */}
-        <Card variant="gradient" style={styles.gradientCard}>
+        <View style={styles.statusCard}>
           <View style={styles.statusHeaderRow}>
             <View style={styles.shieldBg}>
-              <Ionicons name="shield-checkmark" size={32} color={colors.light.primary} />
+              <Ionicons name="shield-checkmark-outline" size={26} color={colors.light.success} />
             </View>
             <View style={styles.statusHeaderTextWrapper}>
               <Text style={styles.statusTitle}>KYC Level 1: Verified</Text>
               <Text style={styles.statusSubtitle}>Daily limit: $5,000</Text>
             </View>
           </View>
-        </Card>
+        </View>
 
         {/* Verification Levels */}
-        <Text style={styles.sectionTitle}>Verification Levels</Text>
-        
+        <Text style={styles.sectionLabel}>Verification Levels</Text>
+
         {/* Tier 1 */}
-        <Card variant="default" style={styles.tierCard}>
+        <View style={styles.card}>
           <View style={styles.tierRow}>
             <View style={styles.tierLeft}>
               <View style={[styles.tierNum, { backgroundColor: colors.light.successLight }]}>
@@ -73,10 +84,10 @@ export default function VerificationScreen() {
             </View>
             <Ionicons name="checkmark-circle" size={24} color={colors.light.success} />
           </View>
-        </Card>
+        </View>
 
         {/* Tier 2 */}
-        <Card variant="default" style={styles.tierCard}>
+        <View style={styles.card}>
           <View style={styles.tierRow}>
             <View style={styles.tierLeft}>
               <View
@@ -127,11 +138,7 @@ export default function VerificationScreen() {
               <Text style={styles.tierUnlockText}>
                 Submit identity documents to request higher account limits.
               </Text>
-              <Button
-                title="Verify Government ID"
-                size="sm"
-                onPress={handleStartVerification}
-              />
+              <Button title="Verify Government ID" size="sm" onPress={handleStartVerification} />
             </View>
           )}
           {level2Status === 'pending' && (
@@ -144,9 +151,9 @@ export default function VerificationScreen() {
               <Text style={styles.verifiedText}>Tier 2 verification completed.</Text>
             </View>
           )}
-        </Card>
+        </View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -155,14 +162,39 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.light.background,
   },
-  content: {
-    paddingHorizontal: spacing.xl,
+  scrollContent: {
     paddingBottom: spacing.xl,
   },
-  gradientCard: {
-    padding: spacing.xl,
-    backgroundColor: colors.light.primary,
-    marginTop: spacing.lg,
+
+  // ─── Header ───
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.background,
+  },
+  backButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.light.textPrimary,
+  },
+
+  // ─── Status Card ───
+  statusCard: {
+    backgroundColor: colors.light.surface,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    borderRadius: 12,
+    padding: spacing.lg,
   },
   statusHeaderRow: {
     flexDirection: 'row',
@@ -170,10 +202,10 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   shieldBg: {
-    width: 52,
-    height: 52,
-    borderRadius: borderRadius.md,
-    backgroundColor: '#FFFFFF',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.light.successLight,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -181,23 +213,33 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   statusTitle: {
-    ...typography.h3,
-    color: '#FFFFFF',
+    fontSize: 16,
+    color: colors.light.textPrimary,
     fontWeight: '700',
   },
   statusSubtitle: {
     ...typography.caption,
-    color: 'rgba(255, 255, 255, 0.8)',
+    color: colors.light.textTertiary,
     marginTop: 2,
   },
-  sectionTitle: {
-    ...typography.h3,
-    color: colors.light.textPrimary,
-    fontWeight: '700',
-    marginTop: spacing['2xl'],
-    marginBottom: spacing.md,
+
+  // ─── Sections ───
+  sectionLabel: {
+    ...typography.caption,
+    color: colors.light.textTertiary,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginTop: spacing.xl,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.xl,
   },
-  tierCard: {
+
+  // ─── Tier Card ───
+  card: {
+    backgroundColor: colors.light.surface,
+    marginHorizontal: spacing.lg,
+    borderRadius: 12,
     padding: spacing.lg,
     marginBottom: spacing.md,
   },
@@ -219,7 +261,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   tierNumText: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
   },
   tierTitle: {
@@ -249,9 +291,6 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderColor: colors.light.borderLight,
-    backgroundColor: colors.light.warningLight,
-    padding: spacing.sm,
-    borderRadius: borderRadius.sm,
   },
   pendingText: {
     ...typography.caption,
@@ -264,9 +303,6 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderColor: colors.light.borderLight,
-    backgroundColor: colors.light.successLight,
-    padding: spacing.sm,
-    borderRadius: borderRadius.sm,
   },
   verifiedText: {
     ...typography.caption,

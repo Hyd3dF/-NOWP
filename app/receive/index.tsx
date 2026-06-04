@@ -81,7 +81,7 @@ export default function ReceiveIndexScreen() {
                   value={qrPayload}
                   size={200}
                   color={colors.light.primary}
-                  backgroundColor="white"
+                  backgroundColor="transparent"
                 />
               </View>
               <Text style={styles.userName}>{profile.display_name || user?.displayName}</Text>
@@ -92,39 +92,47 @@ export default function ReceiveIndexScreen() {
 
         <View style={styles.actionsCard}>
           <Pressable
-            style={[styles.actionRow, !paymentTag && styles.actionDisabled]}
+            style={({ pressed }) => [
+              styles.actionRow,
+              pressed && { backgroundColor: colors.light.borderLight },
+              !paymentTag && styles.actionDisabled
+            ]}
             onPress={handleCopyPaymentId}
             disabled={!paymentTag}
           >
             <View style={styles.actionLeft}>
               <View style={styles.iconBg}>
-                <Ionicons name="copy-outline" size={20} color={colors.light.primary} />
+                <Ionicons name="copy-outline" size={18} color={colors.light.primary} />
               </View>
               <View>
                 <Text style={styles.actionTitle}>Copy Payment ID</Text>
                 <Text style={styles.actionSubtitle}>{paymentTag || 'Loading payment ID'}</Text>
               </View>
             </View>
-            <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
+            <Ionicons name="chevron-forward" size={14} color={colors.light.textTertiary} />
           </Pressable>
 
           <View style={styles.divider} />
 
           <Pressable
-            style={[styles.actionRow, !paymentTag && styles.actionDisabled]}
+            style={({ pressed }) => [
+              styles.actionRow,
+              pressed && { backgroundColor: colors.light.borderLight },
+              !paymentTag && styles.actionDisabled
+            ]}
             onPress={handleShare}
             disabled={!paymentTag}
           >
             <View style={styles.actionLeft}>
               <View style={styles.iconBg}>
-                <Ionicons name="share-social-outline" size={20} color={colors.light.primary} />
+                <Ionicons name="share-social-outline" size={18} color={colors.light.primary} />
               </View>
               <View>
                 <Text style={styles.actionTitle}>Share Payment ID</Text>
                 <Text style={styles.actionSubtitle}>Share via other apps</Text>
               </View>
             </View>
-            <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
+            <Ionicons name="chevron-forward" size={14} color={colors.light.textTertiary} />
           </Pressable>
         </View>
 
@@ -164,6 +172,10 @@ const styles = StyleSheet.create({
     padding: spacing.xl,
     alignItems: 'center',
     marginVertical: spacing.lg,
+    backgroundColor: colors.light.surface,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    borderColor: colors.light.borderLight,
     minHeight: 310,
     justifyContent: 'center',
   },
@@ -173,12 +185,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   qrWrapper: {
-    padding: spacing.md,
-    backgroundColor: '#FFFFFF',
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: colors.light.borderLight,
-    ...shadows.card,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: spacing.lg,
   },
   userName: {
@@ -195,16 +203,18 @@ const styles = StyleSheet.create({
   actionsCard: {
     backgroundColor: colors.light.surface,
     borderRadius: borderRadius.lg,
-    paddingHorizontal: spacing.md,
     width: '100%',
-    ...shadows.card,
+    borderWidth: 1,
+    borderColor: colors.light.borderLight,
     marginVertical: spacing.md,
+    overflow: 'hidden',
   },
   actionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.lg,
   },
   actionDisabled: {
     opacity: 0.5,
@@ -218,8 +228,8 @@ const styles = StyleSheet.create({
   iconBg: {
     width: 36,
     height: 36,
-    borderRadius: borderRadius.sm,
-    backgroundColor: '#F0EDFF',
+    borderRadius: 18,
+    backgroundColor: '#F0EEFF',
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -49,7 +49,7 @@ export default function SetPinScreen() {
         <PinPad
           onComplete={handlePinComplete}
           error={error}
-          title={step === 1 ? 'Enter new PIN' : 'Confirm PIN'}
+          title=""
         />
       </View>
     </SafeAreaView>

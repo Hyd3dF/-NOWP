@@ -8,24 +8,26 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  TextInput,
+  Modal,
+  SafeAreaView,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
-import { spacing, borderRadius, shadows } from '@/theme/spacing';
+import { spacing, borderRadius } from '@/theme/spacing';
 import { useAuthStore } from '@/stores/authStore';
-import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Avatar } from '@/components/ui/Avatar';
-import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { isValidPhone, isValidUsername } from '@/utils/validation';
 
 export default function EditProfileScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { user, updateProfile } = useAuthStore();
 
   const [displayName, setDisplayName] = useState(user?.displayName || '');
@@ -40,6 +42,9 @@ export default function EditProfileScreen() {
   const [usernameError, setUsernameError] = useState('');
   const [phoneError, setPhoneError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [pinModalVisible, setPinModalVisible] = useState(false);
+  const [securityPin, setSecurityPin] = useState('');
+  const [pinError, setPinError] = useState('');
 
   const handlePickAvatar = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -71,11 +76,21 @@ export default function EditProfileScreen() {
     }
   };
 
-  const handleSave = async () => {
+  const isSensitiveProfileChange = () => {
+    const currentPhone = String(user?.phone || '').replace(/[^\d+]/g, '');
+    const nextPhone = phone.trim().replace(/[^\d+]/g, '');
+    const currentUsername = String(user?.username || '').trim().toLowerCase();
+    const nextUsername = username.trim().toLowerCase();
+    return Boolean(
+      (nextPhone && nextPhone !== currentPhone) ||
+        (nextUsername && nextUsername !== currentUsername),
+    );
+  };
+
+  const validateForm = () => {
     setNameError('');
     setUsernameError('');
     setPhoneError('');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
 
     let valid = true;
     if (!displayName.trim()) {
@@ -87,15 +102,17 @@ export default function EditProfileScreen() {
       valid = false;
     }
     if (!isValidPhone(phone)) {
-      setPhoneError('Enter a valid phone number, including country code.');
+      setPhoneError('Enter a valid phone number.');
       valid = false;
     }
 
     if (!valid) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-      return;
     }
+    return valid;
+  };
 
+  const submitProfile = async (pin?: string) => {
     setSaving(true);
 
     try {
@@ -107,9 +124,13 @@ export default function EditProfileScreen() {
         profilePhotoBase64: avatarBase64 || undefined,
         profilePhotoMime: avatarMime || undefined,
         profilePhotoName: avatarName || undefined,
+        pin,
       });
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setPinModalVisible(false);
+      setSecurityPin('');
+      setPinError('');
       Alert.alert(
         'Profile Updated',
         'Your profile changes have been saved successfully.',
@@ -120,65 +141,130 @@ export default function EditProfileScreen() {
           },
         ]
       );
-    } catch {
-      Alert.alert('Profile Not Saved', 'We could not save your changes. Please try again.');
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+      if (code === 'profile_step_up_required' || code === 'invalid_pin') {
+        setPinError('Enter your current 4-digit PIN.');
+        setPinModalVisible(true);
+      } else if (code === 'device_token_required' || code === 'device_token_invalid' || code === 'device_token_revoked') {
+        Alert.alert('Secure Device Required', 'Sign in again on this device before changing sensitive profile details.');
+      } else {
+        Alert.alert('Profile Not Saved', 'We could not save your changes. Please try again.');
+      }
     } finally {
       setSaving(false);
     }
   };
 
+  const handleSave = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+
+    if (!validateForm()) {
+      return;
+    }
+
+    if (isSensitiveProfileChange()) {
+      setPinError('');
+      setSecurityPin('');
+      setPinModalVisible(true);
+      return;
+    }
+
+    await submitProfile();
+  };
+
+  const handlePinConfirm = async () => {
+    if (!/^\d{4}$/.test(securityPin)) {
+      setPinError('Enter your current 4-digit PIN.');
+      return;
+    }
+
+    await submitProfile(securityPin);
+  };
+
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <HeaderBar title="Edit Profile" showBack onBack={() => router.back()} />
+    <View style={styles.container}>
+      {/* ─── Header ─── */}
+      <View style={[styles.headerContainer, { paddingTop: insets.top + 12 }]}>
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.7 }]}
+          hitSlop={8}
+        >
+          <Ionicons name="chevron-back" size={24} color={colors.light.textPrimary} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Edit Profile</Text>
+        <View style={{ width: 44 }} />
+      </View>
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
       >
         <ScrollView
-          contentContainerStyle={styles.content}
+          contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
           {/* Avatar Section */}
           <View style={styles.avatarSection}>
             <View style={styles.avatarWrapper}>
-              <Avatar name={displayName || 'User'} uri={avatarUri} size={96} />
-              <Pressable style={styles.editAvatarBtn} onPress={handlePickAvatar}>
+              <Avatar name={displayName || 'User'} uri={avatarUri} size={92} />
+              <Pressable style={styles.editAvatarBtn} onPress={handlePickAvatar} hitSlop={6}>
                 <Ionicons name="camera" size={16} color="#FFFFFF" />
               </Pressable>
             </View>
             <Text style={styles.avatarHint}>Change profile photo</Text>
           </View>
 
-          {/* Form Fields */}
-          <View style={styles.form}>
-            <Input
-              label="Full Name"
-              placeholder="Alex Johnson"
-              value={displayName}
-              onChangeText={setDisplayName}
-              error={nameError}
-            />
+          {/* Form Fields inside Settings Card */}
+          <View style={styles.card}>
+            <View style={styles.inputRow}>
+              <Text style={[styles.inputLabel, nameError ? { color: colors.light.error } : null]}>
+                Full Name
+              </Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="Full Name"
+                placeholderTextColor={colors.light.textTertiary}
+                value={displayName}
+                onChangeText={setDisplayName}
+              />
+            </View>
+            {nameError ? <Text style={styles.rowErrorText}>{nameError}</Text> : null}
 
-            <Input
-              label="Username"
-              placeholder="alexj"
-              value={username}
-              onChangeText={(text) => setUsername(text.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-              error={usernameError}
-              autoCapitalize="none"
-              icon={<Text style={styles.atSymbol}>@</Text>}
-            />
+            <View style={styles.inputRow}>
+              <Text style={[styles.inputLabel, usernameError ? { color: colors.light.error } : null]}>
+                Username
+              </Text>
+              <View style={styles.usernameWrapper}>
+                <Text style={styles.atSymbol}>@</Text>
+                <TextInput
+                  style={styles.textInput}
+                  placeholder="username"
+                  placeholderTextColor={colors.light.textTertiary}
+                  value={username}
+                  onChangeText={(text) => setUsername(text.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                  autoCapitalize="none"
+                />
+              </View>
+            </View>
+            {usernameError ? <Text style={styles.rowErrorText}>{usernameError}</Text> : null}
 
-            <Input
-              label="Phone Number"
-              placeholder="+1234567890"
-              value={phone}
-              onChangeText={setPhone}
-              error={phoneError}
-              keyboardType="phone-pad"
-            />
+            <View style={[styles.inputRow, { borderBottomWidth: 0 }]}>
+              <Text style={[styles.inputLabel, phoneError ? { color: colors.light.error } : null]}>
+                Phone
+              </Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="Phone Number"
+                placeholderTextColor={colors.light.textTertiary}
+                value={phone}
+                onChangeText={setPhone}
+                keyboardType="phone-pad"
+              />
+            </View>
+            {phoneError ? <Text style={styles.rowErrorText}>{phoneError}</Text> : null}
           </View>
 
           {/* Save Button */}
@@ -192,7 +278,61 @@ export default function EditProfileScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+
+      <Modal
+        visible={pinModalVisible}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => {
+          setPinModalVisible(false);
+          setSecurityPin('');
+          setPinError('');
+        }}
+      >
+        <SafeAreaView style={styles.pinModalContainer}>
+          <View style={styles.pinModalHeader}>
+            <Pressable
+              onPress={() => {
+                setPinModalVisible(false);
+                setSecurityPin('');
+                setPinError('');
+              }}
+              style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.7 }]}
+              hitSlop={8}
+            >
+              <Ionicons name="chevron-back" size={24} color={colors.light.textPrimary} />
+            </Pressable>
+            <Text style={styles.headerTitle}>Confirm PIN</Text>
+            <View style={{ width: 44 }} />
+          </View>
+          <View style={styles.pinModalContent}>
+            <Text style={styles.pinModalTitle}>Secure Profile Change</Text>
+            <Text style={styles.pinModalSubtitle}>
+              Enter your PIN to change sensitive profile details.
+            </Text>
+            <TextInput
+              value={securityPin}
+              onChangeText={(value) => {
+                setSecurityPin(value.replace(/[^0-9]/g, '').slice(0, 4));
+                setPinError('');
+              }}
+              keyboardType="number-pad"
+              secureTextEntry
+              maxLength={4}
+              style={styles.pinInput}
+              textAlign="center"
+            />
+            {pinError ? <Text style={styles.pinErrorText}>{pinError}</Text> : null}
+            <Button
+              title="Confirm & Save"
+              onPress={handlePinConfirm}
+              loading={saving}
+              fullWidth
+            />
+          </View>
+        </SafeAreaView>
+      </Modal>
+    </View>
   );
 }
 
@@ -201,17 +341,39 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.light.background,
   },
-  content: {
-    paddingHorizontal: spacing.xl,
+  scrollContent: {
     paddingBottom: spacing.xl,
   },
+
+  // ─── Header ───
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.background,
+  },
+  backButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.light.textPrimary,
+  },
+
+  // ─── Avatar Section ───
   avatarSection: {
     alignItems: 'center',
     marginVertical: spacing.xl,
   },
   avatarWrapper: {
     position: 'relative',
-    ...shadows.card,
   },
   editAvatarBtn: {
     position: 'absolute',
@@ -231,15 +393,103 @@ const styles = StyleSheet.create({
     color: colors.light.textTertiary,
     marginTop: spacing.sm,
   },
-  form: {
-    gap: spacing.sm,
+
+  // ─── Form Card ───
+  card: {
+    backgroundColor: colors.light.surface,
+    marginHorizontal: spacing.lg,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 15,
+    paddingHorizontal: spacing.lg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.borderLight,
+  },
+  inputLabel: {
+    ...typography.bodySm,
+    color: colors.light.textPrimary,
+    fontWeight: '500',
+    width: 100,
+  },
+  textInput: {
+    flex: 1,
+    ...typography.bodySm,
+    color: colors.light.textPrimary,
+    textAlign: 'right',
+    paddingVertical: 0,
+  },
+  usernameWrapper: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
   },
   atSymbol: {
-    ...typography.body,
+    ...typography.bodySm,
     color: colors.light.textTertiary,
-    fontWeight: '600',
+    marginRight: 2,
   },
+  rowErrorText: {
+    ...typography.caption,
+    color: colors.light.error,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 6,
+    backgroundColor: '#FEE2E250', // very light red tint
+  },
+
+  // ─── Save Action ───
   actionContainer: {
+    marginHorizontal: spacing.lg,
     marginTop: spacing.xl,
+  },
+  pinModalContainer: {
+    flex: 1,
+    backgroundColor: colors.light.background,
+  },
+  pinModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.background,
+  },
+  pinModalContent: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xl,
+    paddingBottom: spacing.xl,
+  },
+  pinModalTitle: {
+    ...typography.h2,
+    color: colors.light.textPrimary,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  pinModalSubtitle: {
+    ...typography.bodySm,
+    color: colors.light.textSecondary,
+    textAlign: 'center',
+    marginTop: spacing.sm,
+    marginBottom: spacing.xl,
+  },
+  pinInput: {
+    ...typography.h2,
+    color: colors.light.textPrimary,
+    letterSpacing: 0,
+    backgroundColor: colors.light.surface,
+    borderRadius: borderRadius.md,
+    paddingVertical: spacing.lg,
+    marginBottom: spacing.md,
+  },
+  pinErrorText: {
+    ...typography.caption,
+    color: colors.light.error,
+    textAlign: 'center',
+    marginBottom: spacing.md,
   },
 });

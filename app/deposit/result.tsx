@@ -12,11 +12,10 @@ import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
 import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
 import { CoinLogo } from '@/components/ui/CoinLogo';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
-import { borderRadius, shadows, spacing } from '@/theme/spacing';
+import { borderRadius, spacing } from '@/theme/spacing';
 import {
   FALLBACK_CURRENCIES,
   fetchPaymentCurrencies,
@@ -83,7 +82,7 @@ export default function DepositResultScreen() {
       >
         <View style={styles.hero}>
           <View style={styles.logoWrap}>
-            <CoinLogo symbol={selectedCoin.symbol} size={44} />
+            <CoinLogo symbol={selectedCoin.symbol} size={40} />
           </View>
           <Text style={styles.title}>Address Ready</Text>
           <Text style={styles.subtitle}>
@@ -91,64 +90,68 @@ export default function DepositResultScreen() {
           </Text>
         </View>
 
-        <Card variant="default" style={styles.card}>
-          <View style={styles.statusRow}>
-            <Text style={styles.cardTitle}>Payment Status</Text>
-            <View style={styles.statusBadge}>
-              <Text style={styles.statusText}>{payment.status}</Text>
-            </View>
-          </View>
-
-          <View style={styles.qrWrapper}>
-            <QRCode
-              value={payment.payment_address}
-              size={210}
-              color={colors.light.primary}
-              backgroundColor="#FFFFFF"
-            />
-          </View>
-
-          <View style={styles.warningBox}>
-            <Ionicons name="warning-outline" size={18} color={colors.light.warning} />
-            <Text style={styles.warningText}>
-              Sending another asset or network can permanently lose funds.
-            </Text>
-          </View>
-
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Payment ID</Text>
-            <Text style={styles.infoValue} numberOfLines={1}>{payment.payment_id}</Text>
-          </View>
-
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Network</Text>
-            <Text style={styles.infoValue} numberOfLines={1}>
-              {selectedCoin.name}
-            </Text>
-          </View>
-
-          <Pressable style={styles.addressBox} onPress={copyAddress}>
-            <View style={styles.addressHeader}>
-              <Text style={styles.addressLabel}>Payment Address</Text>
-              <Ionicons name="copy-outline" size={18} color={colors.light.primary} />
-            </View>
-            <Text style={styles.addressText}>{payment.payment_address}</Text>
-          </Pressable>
-
-          <Button
-            title={copied ? 'Copied' : 'Copy Address'}
-            onPress={copyAddress}
-            fullWidth
-            icon={<Ionicons name="copy-outline" size={18} color="#FFFFFF" />}
-            style={styles.copyButton}
+        {/* QR Code Wrapper */}
+        <View style={styles.qrWrapper}>
+          <QRCode
+            value={payment.payment_address}
+            size={180}
+            color={colors.light.primary}
+            backgroundColor="#FFFFFF"
           />
-        </Card>
+        </View>
+
+        {/* Warning Box */}
+        <View style={styles.warningBox}>
+          <Ionicons name="warning-outline" size={18} color={colors.light.warning} />
+          <Text style={styles.warningText}>
+            Sending another asset or network can permanently lose funds.
+          </Text>
+        </View>
+
+        {/* Status Info Row */}
+        <View style={styles.statusRow}>
+          <Text style={styles.statusLabel}>Payment Status</Text>
+          <View style={styles.statusBadge}>
+            <Text style={styles.statusText}>{payment.status}</Text>
+          </View>
+        </View>
+
+        {/* Info Rows */}
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Payment ID</Text>
+          <Text style={styles.infoValue} numberOfLines={1}>{payment.payment_id}</Text>
+        </View>
+
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Network</Text>
+          <Text style={styles.infoValue} numberOfLines={1}>
+            {selectedCoin.name}
+          </Text>
+        </View>
+
+        {/* Payment Address Stacked Input */}
+        <Pressable style={styles.addressContainer} onPress={copyAddress}>
+          <Text style={styles.addressLabel}>Payment Address</Text>
+          <View style={styles.addressLineRow}>
+            <Text style={styles.addressText} numberOfLines={2}>
+              {payment.payment_address}
+            </Text>
+            <Ionicons name="copy-outline" size={18} color={colors.light.primary} style={styles.copyIcon} />
+          </View>
+        </Pressable>
+
+        {/* Action Buttons */}
+        <Button
+          title={copied ? 'Copied' : 'Copy Address'}
+          onPress={copyAddress}
+          icon={<Ionicons name="copy-outline" size={18} color="#FFFFFF" />}
+          style={styles.button}
+        />
 
         <Button
           title="Create Another Address"
           onPress={createAnotherDeposit}
           variant="outline"
-          fullWidth
           style={styles.secondaryButton}
         />
       </ScrollView>
@@ -163,22 +166,23 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: spacing.xl,
+    paddingTop: spacing.lg,
     paddingBottom: spacing['3xl'],
   },
   hero: {
     alignItems: 'center',
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.xl,
+    paddingBottom: spacing.lg,
   },
   logoWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: colors.light.surface,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#F7F7F7',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.md,
-    ...shadows.card,
+    borderWidth: 1,
+    borderColor: colors.light.borderLight,
   },
   title: {
     ...typography.h2,
@@ -192,42 +196,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: spacing.xs,
   },
-  card: {
-    padding: spacing.lg,
-    alignItems: 'center',
-  },
-  cardTitle: {
-    ...typography.bodySm,
-    color: colors.light.textPrimary,
-    fontWeight: '700',
-  },
-  statusRow: {
-    width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: spacing.lg,
-  },
-  statusBadge: {
-    borderRadius: borderRadius.sm,
-    backgroundColor: colors.light.successLight,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  statusText: {
-    ...typography.caption,
-    color: colors.light.success,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
   qrWrapper: {
-    padding: spacing.md,
-    backgroundColor: '#FFFFFF',
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
-    borderColor: colors.light.borderLight,
-    marginBottom: spacing.lg,
-    ...shadows.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: spacing.xl,
   },
   warningBox: {
     width: '100%',
@@ -237,7 +209,7 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.md,
     backgroundColor: colors.light.warningLight,
     padding: spacing.md,
-    marginBottom: spacing.lg,
+    marginBottom: spacing.xl,
   },
   warningText: {
     ...typography.caption,
@@ -245,53 +217,96 @@ const styles = StyleSheet.create({
     flex: 1,
     lineHeight: 18,
   },
+  statusRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.light.borderLight,
+    marginBottom: spacing.xs,
+  },
+  statusLabel: {
+    fontSize: 13,
+    color: colors.light.textSecondary,
+    fontWeight: '500',
+  },
+  statusBadge: {
+    borderRadius: 6,
+    backgroundColor: colors.light.successLight,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  statusText: {
+    fontSize: 11,
+    color: colors.light.success,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
   infoRow: {
     width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: spacing.md,
-    marginBottom: spacing.sm,
-  },
-  infoLabel: {
-    ...typography.caption,
-    color: colors.light.textSecondary,
-  },
-  infoValue: {
-    ...typography.caption,
-    color: colors.light.textPrimary,
-    fontWeight: '700',
-    flex: 1,
-    textAlign: 'right',
-  },
-  addressBox: {
-    width: '100%',
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.light.background,
-    borderWidth: 1,
-    borderColor: colors.light.border,
-    padding: spacing.md,
-    marginTop: spacing.md,
-  },
-  addressHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.light.borderLight,
     marginBottom: spacing.xs,
   },
-  addressLabel: {
-    ...typography.caption,
+  infoLabel: {
+    fontSize: 13,
     color: colors.light.textSecondary,
+    fontWeight: '500',
   },
-  addressText: {
-    ...typography.bodySm,
+  infoValue: {
+    fontSize: 13,
     color: colors.light.textPrimary,
     fontWeight: '600',
   },
-  copyButton: {
-    marginTop: spacing.lg,
+  addressContainer: {
+    width: '100%',
+    marginTop: spacing.xl,
+    marginBottom: spacing.md,
+  },
+  addressLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.light.textSecondary,
+    letterSpacing: 0.2,
+    marginBottom: spacing.xs,
+  },
+  addressLineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1.5,
+    borderBottomColor: colors.light.border,
+    paddingVertical: spacing.sm,
+  },
+  addressText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.light.textPrimary,
+    lineHeight: 20,
+    marginRight: spacing.md,
+  },
+  copyIcon: {
+    marginLeft: spacing.xs,
+  },
+  button: {
+    alignSelf: 'center',
+    paddingHorizontal: spacing.xl,
+    marginTop: spacing['2xl'],
+    minWidth: 220,
+    borderRadius: 22,
   },
   secondaryButton: {
-    marginTop: spacing.lg,
+    alignSelf: 'center',
+    paddingHorizontal: spacing.xl,
+    marginTop: spacing.md,
+    minWidth: 220,
+    borderRadius: 22,
   },
 });

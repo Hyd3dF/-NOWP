@@ -10,6 +10,7 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
+      "./plugins/withFirebasePnv",
       [
         "expo-camera",
         {
@@ -34,6 +35,7 @@
       }
     },
     "android": {
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#6C5CE7",
         "foregroundImage": "./assets/android-icon-foreground.png",

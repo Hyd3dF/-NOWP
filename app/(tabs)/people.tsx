@@ -5,23 +5,24 @@ import {
   View,
   FlatList,
   Pressable,
+  TextInput,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
-import { spacing, borderRadius } from '@/theme/spacing';
+import { spacing } from '@/theme/spacing';
 import { useFriendStore } from '@/stores/friendStore';
-import { Input } from '@/components/ui/Input';
 import { Avatar } from '@/components/ui/Avatar';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { openChat } from '@/services/api/social';
 import type { Friend } from '@/types/friend';
 
 export default function PeopleScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const {
     isLoading: friendsLoading,
     error,
@@ -83,31 +84,40 @@ export default function PeopleScreen() {
 
   return (
     <View style={styles.container}>
-      <HeaderBar
-        title="People"
-        rightAction={
-          <Pressable onPress={handleAddFriend} style={styles.addBtn}>
-            <Ionicons name="person-add-outline" size={22} color={colors.light.primary} />
-          </Pressable>
-        }
-      />
+      {/* ─── Header ─── */}
+      <View style={[styles.headerContainer, { paddingTop: insets.top + 12 }]}>
+        <View style={{ width: 44 }} />
+        <Text style={styles.headerTitle}>People</Text>
+        <Pressable
+          onPress={handleAddFriend}
+          style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.7 }]}
+          hitSlop={8}
+        >
+          <Ionicons name="person-add-outline" size={22} color={colors.light.textPrimary} />
+        </Pressable>
+      </View>
 
-      <View style={styles.content}>
+      <View style={{ flex: 1 }}>
         {/* Search Bar */}
         <View style={styles.searchContainer}>
-          <Input
-            placeholder="Search friends"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            icon={<Ionicons name="search-outline" size={20} color={colors.light.textTertiary} />}
-          />
+          <View style={styles.searchBar}>
+            <Ionicons name="search-outline" size={18} color={colors.light.textSecondary} style={styles.searchIcon} />
+            <TextInput
+              placeholder="Search friends"
+              placeholderTextColor={colors.light.textTertiary}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              style={styles.searchInput}
+              autoCapitalize="none"
+            />
+          </View>
         </View>
 
         {/* Recent Recipients */}
         {friendsLoading ? (
           <View style={styles.recentSection}>
-            <Text style={styles.sectionTitle}>Recent Recipients</Text>
-            <View style={{ flexDirection: 'row', gap: spacing.md }}>
+            <Text style={styles.sectionLabel}>Recent Recipients</Text>
+            <View style={{ flexDirection: 'row', gap: spacing.md, paddingHorizontal: spacing.xl }}>
               {[1, 2, 3, 4].map((i) => (
                 <View key={i} style={styles.recentItem}>
                   <Skeleton width={52} height={52} borderRadius={26} />
@@ -118,7 +128,7 @@ export default function PeopleScreen() {
           </View>
         ) : recentRecipients.length > 0 && !cleanSearchQuery ? (
           <View style={styles.recentSection}>
-            <Text style={styles.sectionTitle}>Recent Recipients</Text>
+            <Text style={styles.sectionLabel}>Recent Recipients</Text>
             <FlatList
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -148,21 +158,24 @@ export default function PeopleScreen() {
         ) : null}
 
         {/* Friends List */}
-        <Text style={styles.sectionTitle}>Friends</Text>
+        <Text style={styles.sectionLabel}>Friends</Text>
         {friendsLoading ? (
-          <View style={{ flex: 1 }}>
-            {[1, 2, 3, 4, 5].map((i) => (
-              <View key={i} style={styles.friendRow}>
-                <View style={styles.friendLeft}>
-                  <Skeleton width={48} height={48} borderRadius={24} />
-                  <View style={[styles.friendInfo, { gap: 6 }]}>
-                    <Skeleton width={130} height={14} borderRadius={4} />
-                    <Skeleton width={80} height={10} borderRadius={4} />
+          <View style={styles.cardSkeleton}>
+            {[1, 2, 3, 4].map((i, index) => {
+              const isLast = index === 3;
+              return (
+                <View key={i} style={[styles.friendRowSkeleton, !isLast && styles.rowDivider]}>
+                  <View style={styles.friendLeft}>
+                    <Skeleton width={44} height={44} borderRadius={22} />
+                    <View style={[styles.friendInfo, { gap: 6 }]}>
+                      <Skeleton width={130} height={14} borderRadius={4} />
+                      <Skeleton width={80} height={10} borderRadius={4} />
+                    </View>
                   </View>
+                  <Skeleton width={18} height={18} borderRadius={9} />
                 </View>
-                <Skeleton width={12} height={12} borderRadius={6} />
-              </View>
-            ))}
+              );
+            })}
           </View>
         ) : (
           <FlatList
@@ -170,23 +183,33 @@ export default function PeopleScreen() {
             keyExtractor={(item) => item.id}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.friendsList}
-            renderItem={({ item }) => (
-              <Pressable
-                style={styles.friendRow}
-                onPress={() => handleSelectContact(item)}
-              >
-                <View style={styles.friendLeft}>
-                  <Avatar name={item.user.displayName} uri={item.user.avatarUrl} size={48} />
-                  <View style={styles.friendInfo}>
-                    <Text style={styles.friendName}>{item.user.displayName}</Text>
-                    <Text style={styles.friendUsername}>#{item.user.oroyaId || item.user.username}</Text>
+            renderItem={({ item, index }) => {
+              const isLast = index === filteredFriends.length - 1;
+              return (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.friendRow,
+                    !isLast && styles.rowDivider,
+                    pressed && { backgroundColor: colors.light.borderLight },
+                  ]}
+                  onPress={() => handleSelectContact(item)}
+                >
+                  <View style={styles.friendLeft}>
+                    <Avatar name={item.user.displayName} uri={item.user.avatarUrl} size={44} />
+                    <View style={styles.friendInfo}>
+                      <Text style={styles.friendName}>{item.user.displayName}</Text>
+                      <Text style={styles.friendUsername}>#{item.user.oroyaId || item.user.username}</Text>
+                    </View>
                   </View>
-                </View>
-                <Ionicons name="chatbubble-outline" size={20} color={colors.light.textTertiary} />
-              </Pressable>
-            )}
+                  <Ionicons name="chatbubble-outline" size={18} color={colors.light.textSecondary} />
+                </Pressable>
+              );
+            }}
             ListEmptyComponent={
               <EmptyState
+                iconName={cleanSearchQuery ? 'search-outline' : 'people-outline'}
+                iconColor={colors.light.primary}
+                iconGradient={['#F0EDFF', '#E8E4FF']}
                 title={cleanSearchQuery ? 'No matching friends' : 'No friends yet'}
                 subtitle={
                   cleanSearchQuery
@@ -208,45 +231,86 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.light.background,
   },
-  content: {
-    flex: 1,
-    paddingHorizontal: spacing.xl,
+
+  // ─── Header ───
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.background,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.light.textPrimary,
   },
   addBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.light.borderLight,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
   },
+
+  // ─── Search Bar ───
   searchContainer: {
+    paddingHorizontal: spacing.lg,
     marginVertical: spacing.sm,
   },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.light.borderLight,
+    height: 38,
+    borderRadius: 10,
+    paddingHorizontal: spacing.md,
+  },
+  searchIcon: {
+    marginRight: spacing.xs,
+  },
+  searchInput: {
+    flex: 1,
+    ...typography.bodySm,
+    color: colors.light.textPrimary,
+    paddingVertical: 0,
+  },
+
+  // ─── Sections ───
+  sectionLabel: {
+    ...typography.caption,
+    color: colors.light.textTertiary,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.xl,
+  },
+
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.light.errorLight,
-    padding: spacing.sm,
-    marginBottom: spacing.md,
+    marginHorizontal: spacing.lg,
+    borderRadius: 8,
+    backgroundColor: colors.light.errorLight + '50',
+    padding: spacing.md,
+    marginBottom: spacing.sm,
   },
   errorText: {
     ...typography.caption,
     color: colors.light.error,
     flex: 1,
   },
+
+  // ─── Recent Recipients ───
   recentSection: {
-    marginBottom: spacing.xl,
-  },
-  sectionTitle: {
-    ...typography.h3,
-    color: colors.light.textPrimary,
-    fontWeight: '700',
     marginBottom: spacing.md,
   },
   recentList: {
+    paddingHorizontal: spacing.xl,
     gap: spacing.md,
   },
   recentItem: {
@@ -259,16 +323,21 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
     textAlign: 'center',
   },
+
+  // ─── Friends Card List (Now transparent background directly on screen) ───
   friendsList: {
-    paddingBottom: 100, // Account for bottom tabs
+    paddingBottom: 120,
   },
   friendRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderColor: colors.light.borderLight,
+    paddingVertical: 12,
+    paddingHorizontal: spacing.xl,
+  },
+  rowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.border,
   },
   friendLeft: {
     flex: 1,
@@ -283,11 +352,23 @@ const styles = StyleSheet.create({
   friendName: {
     ...typography.bodySm,
     color: colors.light.textPrimary,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   friendUsername: {
     ...typography.caption,
     color: colors.light.textTertiary,
     marginTop: 2,
+  },
+
+  // ─── Skeleton ───
+  cardSkeleton: {
+    paddingBottom: 120,
+  },
+  friendRowSkeleton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: spacing.xl,
   },
 });

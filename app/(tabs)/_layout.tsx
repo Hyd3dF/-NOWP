@@ -5,12 +5,14 @@ import {
   Text,
   View,
   Platform,
+  Animated as RNAnimated,
 } from 'react-native';
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import BottomSheet, { BottomSheetBackdrop, BottomSheetView } from '@gorhom/bottom-sheet';
 import Animated from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius, shadows } from '@/theme/spacing';
@@ -34,56 +36,123 @@ const TAB_ITEMS: TabItemConfig[] = [
 
 interface FABAction {
   label: string;
+  subtitle: string;
   icon: keyof typeof Ionicons.glyphMap;
-  color: string;
-  bgColor: string;
+  gradientColors: readonly [string, string];
+  iconColor: string;
   route: string;
 }
 
 const FAB_ACTIONS: FABAction[] = [
   {
-    label: 'Send to Oroya User',
-    icon: 'person-circle',
-    color: colors.light.primary,
-    bgColor: '#F0EDFF',
+    label: 'Send to User',
+    subtitle: 'Transfer to an Oroya friend',
+    icon: 'paper-plane',
+    gradientColors: ['#EDE9FE', '#DDD6FE'],
+    iconColor: '#7C3AED',
     route: '/send',
   },
   {
-    label: 'Send to External Wallet',
-    icon: 'wallet',
-    color: colors.light.error,
-    bgColor: colors.light.errorLight,
+    label: 'External Wallet',
+    subtitle: 'Withdraw to crypto wallet',
+    icon: 'wallet-outline',
+    gradientColors: ['#FEE2E2', '#FECACA'],
+    iconColor: '#DC2626',
     route: '/withdrawal',
   },
   {
     label: 'Receive Money',
-    icon: 'arrow-down-circle',
-    color: colors.light.success,
-    bgColor: colors.light.successLight,
+    subtitle: 'Get paid by someone',
+    icon: 'download-outline',
+    gradientColors: ['#D1FAE5', '#A7F3D0'],
+    iconColor: '#059669',
     route: '/receive',
   },
   {
     label: 'Deposit Crypto',
-    icon: 'add-circle',
-    color: colors.light.warning,
-    bgColor: colors.light.warningLight,
+    subtitle: 'Add funds to your wallet',
+    icon: 'add-circle-outline',
+    gradientColors: ['#FEF3C7', '#FDE68A'],
+    iconColor: '#D97706',
     route: '/deposit',
   },
   {
     label: 'Show QR Code',
-    icon: 'qr-code',
-    color: colors.light.secondary,
-    bgColor: '#E0FFFE',
+    subtitle: 'Let others scan your code',
+    icon: 'qr-code-outline',
+    gradientColors: ['#CFFAFE', '#A5F3FC'],
+    iconColor: '#0891B2',
     route: '/qr/show',
   },
   {
     label: 'Scan QR Code',
-    icon: 'scan',
-    color: colors.light.textPrimary,
-    bgColor: colors.light.borderLight,
+    subtitle: 'Scan to pay or connect',
+    icon: 'scan-outline',
+    gradientColors: ['#F3F4F6', '#E5E7EB'],
+    iconColor: '#374151',
     route: '/qr/scan',
   },
 ];
+
+// --- Animated Action Row ---
+function ActionRow({
+  action,
+  onPress,
+  isLast,
+}: {
+  action: FABAction;
+  onPress: () => void;
+  isLast: boolean;
+}) {
+  const scale = React.useRef(new RNAnimated.Value(1)).current;
+
+  const handlePressIn = () => {
+    RNAnimated.spring(scale, {
+      toValue: 0.97,
+      useNativeDriver: true,
+      speed: 50,
+      bounciness: 4,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    RNAnimated.spring(scale, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 6,
+    }).start();
+  };
+
+  return (
+    <RNAnimated.View style={{ transform: [{ scale }] }}>
+      <Pressable
+        onPress={onPress}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        style={({ pressed }) => [
+          styles.actionRow,
+          pressed && styles.actionRowPressed,
+          !isLast && styles.actionRowBorder,
+        ]}
+      >
+        <LinearGradient
+          colors={action.gradientColors as unknown as readonly [string, string, ...string[]]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.actionIconCircle}
+        >
+          <Ionicons name={action.icon} size={22} color={action.iconColor} />
+        </LinearGradient>
+        <View style={styles.actionTextContainer}>
+          <Text style={styles.actionRowLabel}>{action.label}</Text>
+          <Text style={styles.actionRowSubtitle}>{action.subtitle}</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.light.textTertiary} />
+      </Pressable>
+    </RNAnimated.View>
+  );
+}
 
 function CustomTabBar({ state, descriptors, navigation }: any) {
   const insets = useSafeAreaInsets();
@@ -120,7 +189,8 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
         {...props}
         disappearsOnIndex={-1}
         appearsOnIndex={0}
-        opacity={0}
+        opacity={0.4}
+        pressBehavior="close"
       />
     ),
     [],
@@ -205,7 +275,14 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
         {/* FAB Button */}
         <View style={styles.fabWrapper}>
           <Pressable onPress={handleFabPress} style={styles.fabButton}>
-            <Ionicons name="add" size={28} color="#FFFFFF" />
+            <LinearGradient
+              colors={['#7C3AED', '#6C5CE7']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.fabGradient}
+            >
+              <Ionicons name="add" size={28} color="#FFFFFF" />
+            </LinearGradient>
           </Pressable>
         </View>
       </View>
@@ -214,7 +291,7 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
       <BottomSheet
         ref={bottomSheetRef}
         index={-1}
-        snapPoints={['52%']}
+        snapPoints={['58%']}
         enablePanDownToClose
         onChange={handleSheetChange}
         backdropComponent={renderBackdrop}
@@ -223,29 +300,26 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
         style={styles.sheetContainer}
       >
         <BottomSheetView style={styles.sheetContent}>
-          <Text style={styles.sheetTitle}>Quick Actions</Text>
-          <View style={styles.actionsGrid}>
-            {FAB_ACTIONS.map((action) => (
-              <Pressable
+          {/* Sheet Header */}
+          <View style={styles.sheetHeader}>
+            <View style={styles.sheetTitleRow}>
+              <View style={styles.sheetTitleIcon}>
+                <Ionicons name="flash" size={16} color={colors.light.primary} />
+              </View>
+              <Text style={styles.sheetTitle}>Quick Actions</Text>
+            </View>
+            <Text style={styles.sheetSubtitle}>What would you like to do?</Text>
+          </View>
+
+          {/* Action List */}
+          <View style={styles.actionsList}>
+            {FAB_ACTIONS.map((action, index) => (
+              <ActionRow
                 key={action.label}
-                style={({ pressed }) => [
-                  styles.actionItem,
-                  pressed && styles.actionItemPressed,
-                ]}
+                action={action}
                 onPress={() => handleActionPress(action.route)}
-              >
-                <View
-                  style={[
-                    styles.actionIconContainer,
-                    { backgroundColor: action.bgColor },
-                  ]}
-                >
-                  <Ionicons name={action.icon} size={26} color={action.color} />
-                </View>
-                <Text style={styles.actionLabel} numberOfLines={2}>
-                  {action.label}
-                </Text>
-              </Pressable>
+                isLast={index === FAB_ACTIONS.length - 1}
+              />
             ))}
           </View>
         </BottomSheetView>
@@ -271,6 +345,7 @@ export default function TabsLayout() {
 }
 
 const styles = StyleSheet.create({
+  // ─── Tab Bar ───
   tabBarContainer: {
     position: 'absolute',
     bottom: 0,
@@ -321,6 +396,8 @@ const styles = StyleSheet.create({
     ...typography.tabLabel,
     letterSpacing: 0.1,
   },
+
+  // ─── FAB ───
   fabWrapper: {
     position: 'absolute',
     top: -FAB_SIZE / 2 + 4,
@@ -335,62 +412,125 @@ const styles = StyleSheet.create({
     width: FAB_SIZE,
     height: FAB_SIZE,
     borderRadius: FAB_SIZE / 2,
-    backgroundColor: colors.light.primary,
+    overflow: 'hidden',
+  },
+  fabGradient: {
+    width: FAB_SIZE,
+    height: FAB_SIZE,
+    borderRadius: FAB_SIZE / 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
+
+  // ─── Bottom Sheet ───
   sheetContainer: {
     zIndex: 999,
   },
   sheetBackground: {
     backgroundColor: colors.light.surface,
-    borderTopLeftRadius: borderRadius.xl,
-    borderTopRightRadius: borderRadius.xl,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -8 },
+        shadowOpacity: 0.12,
+        shadowRadius: 24,
+      },
+      android: {
+        elevation: 16,
+      },
+    }),
   },
   sheetHandle: {
     backgroundColor: colors.light.border,
-    width: 36,
+    width: 40,
     height: 4,
     borderRadius: 2,
   },
   sheetContent: {
     flex: 1,
     paddingHorizontal: spacing.xl,
-    paddingTop: spacing.sm,
+    paddingTop: spacing.xs,
     paddingBottom: spacing['2xl'],
+  },
+
+  // ─── Sheet Header ───
+  sheetHeader: {
+    marginBottom: spacing.xl,
+    paddingBottom: spacing.lg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.borderLight,
+  },
+  sheetTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: 4,
+  },
+  sheetTitleIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#F0EDFF',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   sheetTitle: {
     ...typography.h3,
     color: colors.light.textPrimary,
-    marginBottom: spacing.xl,
-    textAlign: 'center',
+    fontWeight: '700',
+    letterSpacing: -0.3,
   },
-  actionsGrid: {
+  sheetSubtitle: {
+    ...typography.bodySm,
+    color: colors.light.textTertiary,
+    marginLeft: 36,
+  },
+
+  // ─── Action List ───
+  actionsList: {
+    backgroundColor: colors.light.background,
+    borderRadius: borderRadius.lg,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.light.borderLight,
+  },
+  actionRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    gap: spacing.lg,
-  },
-  actionItem: {
-    width: '30%',
     alignItems: 'center',
-    paddingVertical: spacing.md,
-    borderRadius: borderRadius.md,
+    paddingVertical: 14,
+    paddingHorizontal: spacing.md,
+    gap: spacing.md,
+    backgroundColor: colors.light.surface,
   },
-  actionItemPressed: {
+  actionRowPressed: {
     backgroundColor: colors.light.borderLight,
   },
-  actionIconContainer: {
-    width: 52,
-    height: 52,
-    borderRadius: 18,
+  actionRowBorder: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.borderLight,
+  },
+  actionIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: spacing.sm,
   },
-  actionLabel: {
-    ...typography.caption,
+  actionTextContainer: {
+    flex: 1,
+  },
+  actionRowLabel: {
+    ...typography.bodySm,
     color: colors.light.textPrimary,
-    textAlign: 'center',
+    fontWeight: '600',
+    letterSpacing: -0.1,
+  },
+  actionRowSubtitle: {
+    ...typography.caption,
+    color: colors.light.textTertiary,
+    marginTop: 2,
+    fontSize: 11,
   },
 });

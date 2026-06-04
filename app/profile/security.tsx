@@ -8,6 +8,7 @@ import {
   Alert,
   Modal,
   Pressable,
+  SafeAreaView,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -254,20 +255,38 @@ export default function SecuritySettingsScreen() {
         </View>
       </ScrollView>
 
-      <Modal visible={Boolean(pinRequest)} transparent animationType="fade">
-        <View style={styles.pinOverlay}>
-          <View style={styles.pinSheet}>
-            <Text style={styles.pinTitle}>{pinRequest?.title}</Text>
-            <PinPad
-              key={pinPadKey}
-              onComplete={(pin) => closePinPrompt(pin)}
-              error=""
-            />
-            <Pressable style={styles.pinCancelButton} onPress={() => closePinPrompt(null)}>
-              <Text style={styles.pinCancelText}>Cancel</Text>
+      <Modal
+        visible={Boolean(pinRequest)}
+        transparent={false}
+        animationType="slide"
+        onRequestClose={() => closePinPrompt(null)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Pressable
+              onPress={() => closePinPrompt(null)}
+              style={({ pressed }) => [styles.modalBackButton, pressed && { opacity: 0.7 }]}
+              hitSlop={8}
+            >
+              <Ionicons name="chevron-back" size={24} color={colors.light.textPrimary} />
             </Pressable>
+            <Text style={styles.modalTitle}>{pinRequest?.title || 'Confirm Security PIN'}</Text>
+            <View style={{ width: 44 }} />
           </View>
-        </View>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalSubtitle}>
+              Please enter your 4-digit security PIN to confirm identity.
+            </Text>
+            <View style={styles.modalPinPadWrapper}>
+              <PinPad
+                key={pinPadKey}
+                onComplete={(pin) => closePinPrompt(pin)}
+                error=""
+                title=""
+              />
+            </View>
+          </View>
+        </SafeAreaView>
       </Modal>
     </View>
   );
@@ -329,35 +348,44 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     overflow: 'hidden',
   },
-  pinOverlay: {
+  modalContainer: {
     flex: 1,
+    backgroundColor: colors.light.background,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.background,
+  },
+  modalBackButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-    backgroundColor: 'rgba(0, 0, 0, 0.45)',
   },
-  pinSheet: {
-    width: '100%',
-    maxWidth: 360,
-    borderRadius: borderRadius.lg,
-    padding: spacing.xl,
-    backgroundColor: colors.light.surface,
-  },
-  pinTitle: {
-    ...typography.h3,
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
     color: colors.light.textPrimary,
-    textAlign: 'center',
-    marginBottom: spacing.lg,
   },
-  pinCancelButton: {
-    alignSelf: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    marginTop: spacing.md,
+  modalContent: {
+    flex: 1,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.xl,
   },
-  pinCancelText: {
+  modalSubtitle: {
     ...typography.bodySm,
     color: colors.light.textSecondary,
-    fontWeight: '700',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: spacing.xl,
+  },
+  modalPinPadWrapper: {
+    flex: 1,
+    justifyContent: 'center',
   },
 });

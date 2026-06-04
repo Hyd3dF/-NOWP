@@ -43,6 +43,7 @@
     "backend:dev": "npm run dev --prefix backend",
     "backend:check": "npm run check --prefix backend",
     "backend:schema:sync": "npm run schema:sync --prefix backend",
+    "backend:test": "npm run test --prefix backend",
     "backend:test:pb": "npm run test:pb --prefix backend"
   },
   "private": true

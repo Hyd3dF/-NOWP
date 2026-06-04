@@ -8,13 +8,11 @@ import {
   Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
-import { spacing, borderRadius } from '@/theme/spacing';
-import { HeaderBar } from '@/components/shared/HeaderBar';
-import { Card } from '@/components/ui/Card';
+import { spacing } from '@/theme/spacing';
 
 interface FAQItem {
   id: string;
@@ -47,6 +45,7 @@ const FAQS: FAQItem[] = [
 
 export default function HelpScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [expandedFAQ, setExpandedFAQ] = useState<string | null>(null);
 
   const toggleFAQ = (id: string) => {
@@ -66,65 +65,91 @@ export default function HelpScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <HeaderBar title="Help & Support" showBack onBack={() => router.back()} />
+    <View style={styles.container}>
+      {/* ─── Header ─── */}
+      <View style={[styles.headerContainer, { paddingTop: insets.top + 12 }]}>
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.7 }]}
+          hitSlop={8}
+        >
+          <Ionicons name="chevron-back" size={24} color={colors.light.textPrimary} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Help & Support</Text>
+        <View style={{ width: 44 }} />
+      </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Support Card Options */}
-        <Text style={styles.sectionTitle}>Get in Touch</Text>
-        <Card variant="default" style={styles.card}>
-          <Pressable style={styles.supportRow} onPress={handleContactSupport}>
-            <View style={styles.supportLeft}>
-              <View style={[styles.iconBg, { backgroundColor: '#F0EDFF' }]}>
-                <Ionicons name="chatbubbles-outline" size={22} color={colors.light.primary} />
-              </View>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        {/* Support Options */}
+        <Text style={styles.sectionLabel}>Get in Touch</Text>
+        <View style={styles.card}>
+          {/* Live Chat */}
+          <Pressable
+            style={({ pressed }) => [
+              styles.row,
+              pressed && { backgroundColor: colors.light.borderLight },
+            ]}
+            onPress={handleContactSupport}
+          >
+            <View style={styles.rowLeft}>
+              <Ionicons name="chatbubbles-outline" size={20} color={colors.light.textSecondary} />
               <View>
-                <Text style={styles.supportTitle}>In-App Live Chat</Text>
-                <Text style={styles.supportSubtitle}>Get answers in minutes</Text>
+                <Text style={styles.rowTitle}>In-App Live Chat</Text>
+                <Text style={styles.rowSubtitle}>Get answers in minutes</Text>
               </View>
             </View>
             <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
           </Pressable>
-          <View style={styles.divider} />
 
-          <View style={styles.supportRow}>
-            <View style={styles.supportLeft}>
-              <View style={[styles.iconBg, { backgroundColor: '#E0FFFE' }]}>
-                <Ionicons name="mail-outline" size={22} color={colors.light.secondary} />
-              </View>
+          {/* Email Support */}
+          <View style={[styles.row, { borderBottomWidth: 0 }]}>
+            <View style={styles.rowLeft}>
+              <Ionicons name="mail-outline" size={20} color={colors.light.textSecondary} />
               <View>
-                <Text style={styles.supportTitle}>Email Support</Text>
-                <Text style={styles.supportSubtitle}>support@oroya.app</Text>
+                <Text style={styles.rowTitle}>Email Support</Text>
+                <Text style={styles.rowSubtitle}>support@oroya.app</Text>
               </View>
             </View>
             <Text style={styles.detailText}>24h Response</Text>
           </View>
-        </Card>
+        </View>
 
         {/* FAQs */}
-        <Text style={styles.sectionTitle}>Frequently Asked Questions</Text>
-        {FAQS.map((faq) => {
-          const isExpanded = expandedFAQ === faq.id;
-          return (
-            <Card key={faq.id} variant="default" style={styles.faqCard}>
-              <Pressable style={styles.faqHeader} onPress={() => toggleFAQ(faq.id)}>
-                <Text style={styles.faqQuestion}>{faq.question}</Text>
-                <Ionicons
-                  name={isExpanded ? 'chevron-up' : 'chevron-down'}
-                  size={16}
-                  color={colors.light.textTertiary}
-                />
-              </Pressable>
-              {isExpanded && (
-                <View style={styles.faqAnswerContainer}>
-                  <Text style={styles.faqAnswer}>{faq.answer}</Text>
-                </View>
-              )}
-            </Card>
-          );
-        })}
+        <Text style={styles.sectionLabel}>Frequently Asked Questions</Text>
+        <View style={styles.card}>
+          {FAQS.map((faq, index) => {
+            const isExpanded = expandedFAQ === faq.id;
+            const isLast = index === FAQS.length - 1;
+            return (
+              <View
+                key={faq.id}
+                style={[
+                  styles.faqRow,
+                  isLast && { borderBottomWidth: 0 },
+                ]}
+              >
+                <Pressable
+                  style={styles.faqHeader}
+                  onPress={() => toggleFAQ(faq.id)}
+                >
+                  <Text style={styles.faqQuestion}>{faq.question}</Text>
+                  <Ionicons
+                    name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                    size={16}
+                    color={colors.light.textTertiary}
+                  />
+                </Pressable>
+                {isExpanded && (
+                  <View style={styles.faqAnswerContainer}>
+                    <Text style={styles.faqAnswer}>{faq.answer}</Text>
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -133,44 +158,71 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.light.background,
   },
-  content: {
-    paddingHorizontal: spacing.xl,
+  scrollContent: {
     paddingBottom: spacing.xl,
   },
-  sectionTitle: {
-    ...typography.h3,
-    color: colors.light.textPrimary,
-    fontWeight: '700',
-    marginTop: spacing.xl,
-    marginBottom: spacing.md,
-  },
-  card: {
-    paddingHorizontal: spacing.md,
-  },
-  supportRow: {
+
+  // ─── Header ───
+  headerContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.background,
   },
-  supportLeft: {
+  backButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.light.textPrimary,
+  },
+
+  // ─── Sections ───
+  sectionLabel: {
+    ...typography.caption,
+    color: colors.light.textTertiary,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginTop: spacing.xl,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.xl,
+  },
+
+  // ─── Card & Rows ───
+  card: {
+    backgroundColor: colors.light.surface,
+    marginHorizontal: spacing.lg,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 15,
+    paddingHorizontal: spacing.lg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.borderLight,
+  },
+  rowLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
   },
-  iconBg: {
-    width: 40,
-    height: 40,
-    borderRadius: borderRadius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  supportTitle: {
+  rowTitle: {
     ...typography.bodySm,
     color: colors.light.textPrimary,
-    fontWeight: '600',
+    fontWeight: '500',
   },
-  supportSubtitle: {
+  rowSubtitle: {
     ...typography.caption,
     color: colors.light.textTertiary,
     marginTop: 2,
@@ -179,13 +231,13 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: colors.light.textTertiary,
   },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.light.borderLight,
-  },
-  faqCard: {
-    padding: spacing.md,
-    marginBottom: spacing.sm,
+
+  // ─── FAQ Row Layout ───
+  faqRow: {
+    paddingVertical: 15,
+    paddingHorizontal: spacing.lg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.borderLight,
   },
   faqHeader: {
     flexDirection: 'row',
@@ -195,7 +247,7 @@ const styles = StyleSheet.create({
   faqQuestion: {
     ...typography.bodySm,
     color: colors.light.textPrimary,
-    fontWeight: '600',
+    fontWeight: '500',
     flex: 1,
     paddingRight: spacing.md,
   },

@@ -6,22 +6,25 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
+  Pressable,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
 import { changePassword } from '@/services/api/security';
 import { ApiError } from '@/services/api/client';
 import { useAuthStore } from '@/stores/authStore';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
-import { spacing } from '@/theme/spacing';
+import { spacing, borderRadius } from '@/theme/spacing';
 
 export default function ChangePasswordScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -69,7 +72,18 @@ export default function ChangePasswordScreen() {
 
   return (
     <View style={styles.container}>
-      <HeaderBar title="Change Password" showBack onBack={() => router.back()} compact />
+      {/* ─── Header ─── */}
+      <View style={[styles.headerContainer, { paddingTop: insets.top + 12 }]}>
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.7 }]}
+          hitSlop={8}
+        >
+          <Ionicons name="chevron-back" size={24} color={colors.light.textPrimary} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Change Password</Text>
+        <View style={{ width: 44 }} />
+      </View>
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -80,42 +94,60 @@ export default function ChangePasswordScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.title}>Protect your account</Text>
-          <Text style={styles.subtitle}>
-            Use a strong password that you do not use anywhere else.
-          </Text>
+          {error ? (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : null}
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {/* Form Fields inside Settings Card */}
+          <View style={styles.card}>
+            <View style={styles.inputRow}>
+              <Text style={styles.inputLabel}>Current Password</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="Required"
+                placeholderTextColor={colors.light.textTertiary}
+                value={currentPassword}
+                onChangeText={setCurrentPassword}
+                secureTextEntry
+              />
+            </View>
 
-          <Input
-            label="Current Password"
-            placeholder="Enter current password"
-            value={currentPassword}
-            onChangeText={setCurrentPassword}
-            secureTextEntry
-          />
-          <Input
-            label="New Password"
-            placeholder="At least 8 characters"
-            value={newPassword}
-            onChangeText={setNewPassword}
-            secureTextEntry
-          />
-          <Input
-            label="Confirm New Password"
-            placeholder="Repeat new password"
-            value={confirmPassword}
-            onChangeText={setConfirmPassword}
-            secureTextEntry
-          />
+            <View style={styles.inputRow}>
+              <Text style={styles.inputLabel}>New Password</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="At least 8 characters"
+                placeholderTextColor={colors.light.textTertiary}
+                value={newPassword}
+                onChangeText={setNewPassword}
+                secureTextEntry
+              />
+            </View>
 
-          <Button
-            title="Update Password"
-            onPress={submit}
-            loading={isLoading}
-            fullWidth
-            style={styles.button}
-          />
+            <View style={[styles.inputRow, { borderBottomWidth: 0 }]}>
+              <Text style={styles.inputLabel}>Confirm Password</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="Repeat new password"
+                placeholderTextColor={colors.light.textTertiary}
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                secureTextEntry
+              />
+            </View>
+          </View>
+
+          {/* Action Button */}
+          <View style={styles.actionContainer}>
+            <Button
+              title="Update Password"
+              onPress={submit}
+              loading={isLoading}
+              fullWidth
+            />
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
@@ -131,28 +163,74 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    paddingHorizontal: spacing.xl,
-    paddingTop: spacing.xl,
-    paddingBottom: spacing['2xl'],
+    paddingTop: spacing.md,
+    paddingBottom: spacing['3xl'],
   },
-  title: {
-    ...typography.h2,
+  // ─── Header ───
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.background,
+  },
+  backButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
     color: colors.light.textPrimary,
-    fontWeight: '800',
   },
-  subtitle: {
+  // ─── Card & Rows ───
+  card: {
+    backgroundColor: colors.light.surface,
+    marginHorizontal: spacing.lg,
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginTop: spacing.md,
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 15,
+    paddingHorizontal: spacing.lg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.borderLight,
+  },
+  inputLabel: {
     ...typography.bodySm,
-    color: colors.light.textSecondary,
-    lineHeight: 20,
-    marginTop: spacing.xs,
-    marginBottom: spacing.xl,
+    color: colors.light.textPrimary,
+    fontWeight: '500',
+    width: 140,
   },
-  error: {
+  textInput: {
+    flex: 1,
+    ...typography.bodySm,
+    color: colors.light.textPrimary,
+    textAlign: 'right',
+    paddingVertical: 0,
+  },
+  errorBox: {
+    backgroundColor: '#FFF2F2',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.lg,
+  },
+  errorText: {
     ...typography.bodySm,
     color: colors.light.error,
-    marginBottom: spacing.md,
+    textAlign: 'center',
+    fontWeight: '500',
   },
-  button: {
-    marginTop: spacing.lg,
+  actionContainer: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.xl,
   },
 });

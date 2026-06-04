@@ -146,8 +146,7 @@ export default function ChangePinScreen() {
           key={`${step}-${pinPadKey}`}
           onComplete={handlePinComplete}
           error={error}
-          title={getTitle()}
-          subtitle={getSubtitle()}
+          title=""
         />
       </View>
     </View>

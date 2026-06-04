@@ -60,6 +60,7 @@ type ProfileUpdateInput = Partial<UserProfile> & {
   profilePhotoBase64?: string;
   profilePhotoMime?: string;
   profilePhotoName?: string;
+  pin?: string;
 };
 
 interface AuthState {
@@ -332,6 +333,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       display_name: updates.displayName ?? currentUser.displayName,
       username: updates.username ?? currentUser.username,
       phone: updates.phone ?? currentUser.phone,
+      pin: updates.pin,
       profile_photo_base64: updates.profilePhotoBase64 || undefined,
       profile_photo_mime: updates.profilePhotoMime || undefined,
       profile_photo_name: updates.profilePhotoName || undefined,

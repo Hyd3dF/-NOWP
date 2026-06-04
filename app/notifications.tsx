@@ -107,12 +107,13 @@ function NotificationRow({ item, onPress }: { item: AppNotification; onPress: ()
 
   if (isBrandNotification) {
     const hasSafeLink = Boolean(getSafeExternalUrl(item.linkUrl));
+    const safeImageUrl = getSafeExternalUrl(item.imageUrl);
 
     return (
       <Pressable style={({ pressed }) => [styles.brandCard, pressed && styles.brandCardPressed]} onPress={onPress}>
         <View style={styles.brandImageFrame}>
-          {item.imageUrl ? (
-            <Image source={{ uri: item.imageUrl }} style={styles.brandImage} resizeMode="cover" />
+          {safeImageUrl ? (
+            <Image source={{ uri: safeImageUrl }} style={styles.brandImage} resizeMode="cover" />
           ) : (
             <LinearGradient
               colors={['#6C5CE7', '#4F46E5']}
@@ -160,14 +161,16 @@ function NotificationRow({ item, onPress }: { item: AppNotification; onPress: ()
     );
   }
 
+  const safeImageUrl = getSafeExternalUrl(item.imageUrl);
+
   return (
     <Pressable style={({ pressed }) => [styles.row, pressed && styles.rowPressed]} onPress={onPress}>
       <View style={styles.iconWrap}>
-        {item.imageUrl ? (
+        {safeImageUrl ? (
           item.type === 'friend_request' || item.type === 'friend_accept' ? (
-            <Avatar name={item.title} uri={item.imageUrl} size={46} />
+            <Avatar name={item.title} uri={safeImageUrl} size={46} />
           ) : (
-            <Image source={{ uri: item.imageUrl }} style={styles.imageIcon} />
+            <Image source={{ uri: safeImageUrl }} style={styles.imageIcon} />
           )
         ) : (
           <View style={[styles.iconCircle, !item.isRead && styles.iconCircleUnread]}>
@@ -200,7 +203,7 @@ function getIconName(item: AppNotification): keyof typeof Ionicons.glyphMap {
 
 function getSafeExternalUrl(value?: string) {
   const url = String(value || '').trim();
-  return /^https?:\/\/[^\s]+$/i.test(url) ? url : '';
+  return /^https:\/\/[^\s]+$/i.test(url) ? url : '';
 }
 
 const styles = StyleSheet.create({

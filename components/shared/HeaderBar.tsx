@@ -6,6 +6,8 @@ import {
   StyleSheet,
   Text,
   View,
+  StyleProp,
+  ViewStyle,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,6 +20,8 @@ interface HeaderBarProps {
   showBack?: boolean;
   onBack?: () => void;
   rightAction?: React.ReactNode;
+  containerStyle?: StyleProp<ViewStyle>;
+  compact?: boolean;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -25,14 +29,32 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   showBack = false,
   onBack,
   rightAction,
+  containerStyle,
+  compact = false,
 }) => {
   const insets = useSafeAreaInsets();
   const statusBarHeight =
     Platform.OS === 'android' ? StatusBar.currentHeight ?? 0 : 0;
   const topPadding = Math.max(insets.top, statusBarHeight);
 
+  const calculatedPaddingTop = compact
+    ? topPadding + spacing.xs
+    : topPadding + spacing.sm;
+  const calculatedPaddingBottom = compact
+    ? spacing.xs
+    : spacing.md;
+
   return (
-    <View style={[styles.container, { paddingTop: topPadding + spacing.sm }]}>
+    <View
+      style={[
+        styles.container,
+        {
+          paddingTop: calculatedPaddingTop,
+          paddingBottom: calculatedPaddingBottom,
+        },
+        containerStyle,
+      ]}
+    >
       <View style={styles.content}>
         {/* Left slot */}
         <View style={styles.leftSlot}>

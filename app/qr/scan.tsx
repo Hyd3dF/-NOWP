@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
   View,
+  Animated,
+  Easing,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,6 +19,29 @@ export default function QRScanScreen() {
   const router = useRouter();
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
+
+  const translateY = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(translateY, {
+          toValue: 206,
+          duration: 2200,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(translateY, {
+          toValue: 0,
+          duration: 2200,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [translateY]);
 
   const handleBarcodeScanned = ({ data }: { type: string; data: string }) => {
     if (scanned) return;
@@ -45,7 +70,7 @@ export default function QRScanScreen() {
   if (!permission.granted) {
     return (
       <View style={styles.container}>
-        <HeaderBar title="Scan QR Code" showBack onBack={() => router.back()} />
+        <HeaderBar title="Scan QR Code" showBack onBack={() => router.back()} compact />
         <View style={styles.permissionContainer}>
           <Ionicons name="camera-outline" size={64} color="#9CA3AF" />
           <Text style={styles.permissionText}>
@@ -59,7 +84,7 @@ export default function QRScanScreen() {
 
   return (
     <View style={styles.container}>
-      <HeaderBar title="Scan QR Code" showBack onBack={() => router.back()} />
+      <HeaderBar title="Scan QR Code" showBack onBack={() => router.back()} compact />
 
       <View style={styles.cameraContainer}>
         <CameraView
@@ -82,7 +107,7 @@ export default function QRScanScreen() {
               <View style={[styles.corner, styles.topRight]} />
               <View style={[styles.corner, styles.bottomLeft]} />
               <View style={[styles.corner, styles.bottomRight]} />
-              <View style={styles.scanLine} />
+              <Animated.View style={[styles.scanLine, { transform: [{ translateY }] }]} />
             </View>
           </View>
 
@@ -192,6 +217,8 @@ const styles = StyleSheet.create({
   },
   scanLine: {
     position: 'absolute',
+    top: 22,
+    left: '5%',
     width: '90%',
     height: 3,
     backgroundColor: colors.light.primary,

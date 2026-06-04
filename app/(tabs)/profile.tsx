@@ -15,9 +15,7 @@ import { typography } from '@/theme/typography';
 import { spacing, borderRadius, shadows } from '@/theme/spacing';
 import { useAuthStore } from '@/stores/authStore';
 import { usePaymentProfileStore } from '@/stores/paymentProfileStore';
-import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Avatar } from '@/components/ui/Avatar';
-import { Button } from '@/components/ui/Button';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -28,41 +26,38 @@ export default function ProfileScreen() {
     fetchPaymentProfile();
   }, [fetchPaymentProfile, user?.id]);
 
-  const handleLogout = () => {
-    Alert.alert('Log Out', 'Are you sure you want to log out of Oroya?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Log Out',
-        style: 'destructive',
-        onPress: async () => {
-          await logout();
-          router.replace('/(auth)/login');
-        },
-      },
-    ]);
-  };
-
   const handleCopyOroyaId = () => {
     if (!profile?.payment_tag) return;
     Clipboard.setString(profile.payment_tag);
     Alert.alert('Copied', 'Your Oroya ID has been copied.');
   };
 
-  const renderSettingItem = (
+  const renderRow = (
     icon: keyof typeof Ionicons.glyphMap,
     label: string,
     onPress: () => void,
-    rightContent?: React.ReactNode
+    opts?: { rightText?: string; destructive?: boolean; isLast?: boolean }
   ) => (
-    <Pressable style={styles.settingItem} onPress={onPress}>
-      <View style={styles.settingLeft}>
-        <View style={styles.settingIconBg}>
-          <Ionicons name={icon} size={20} color={colors.light.primary} />
-        </View>
-        <Text style={styles.settingLabel}>{label}</Text>
+    <Pressable
+      style={({ pressed }) => [
+        styles.row,
+        !opts?.isLast && styles.rowBorder,
+        pressed && { backgroundColor: colors.light.borderLight },
+      ]}
+      onPress={onPress}
+    >
+      <View style={styles.rowLeft}>
+        <Ionicons
+          name={icon}
+          size={20}
+          color={opts?.destructive ? colors.light.error : colors.light.textSecondary}
+        />
+        <Text style={[styles.rowLabel, opts?.destructive && { color: colors.light.error }]}>
+          {label}
+        </Text>
       </View>
-      {rightContent !== undefined ? (
-        rightContent
+      {opts?.rightText ? (
+        <Text style={styles.rowRight}>{opts.rightText}</Text>
       ) : (
         <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
       )}
@@ -71,55 +66,44 @@ export default function ProfileScreen() {
 
   return (
     <View style={styles.container}>
-      <HeaderBar title="Profile" />
-      
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.profileHeaderCard}>
-          <Avatar name={user?.displayName || 'User'} uri={user?.avatarUrl} size={72} />
-          <Text style={styles.profileName}>{user?.displayName || 'Oroya User'}</Text>
-          <Text style={styles.profileUsername}>@{user?.username || 'user'}</Text>
-          <Pressable style={styles.oroyaIdBox} onPress={handleCopyOroyaId}>
-            <View>
-              <Text style={styles.oroyaIdLabel}>Oroya ID</Text>
-              <Text style={styles.oroyaIdValue}>
-                {profile?.payment_tag ? `#${profile.payment_tag}` : 'Not available'}
-              </Text>
-            </View>
-            <Ionicons name="copy-outline" size={18} color={colors.light.primary} />
+        {/* ─── Profile Header ─── */}
+        <View style={styles.profileHeader}>
+          <Avatar name={user?.displayName || 'User'} uri={user?.avatarUrl} size={76} />
+          <Text style={styles.name}>{user?.displayName || 'Oroya User'}</Text>
+          <Text style={styles.username}>@{user?.username || 'user'}</Text>
+          <Pressable
+            style={({ pressed }) => [styles.idChip, pressed && { opacity: 0.7 }]}
+            onPress={handleCopyOroyaId}
+          >
+            <Text style={styles.idText}>
+              {profile?.payment_tag ? `#${profile.payment_tag}` : '—'}
+            </Text>
+            <Ionicons name="copy-outline" size={14} color={colors.light.primary} />
           </Pressable>
         </View>
 
-        <Text style={styles.sectionTitle}>Account</Text>
-        <View style={styles.sectionCard}>
-          {renderSettingItem('person-outline', 'Edit Profile', () => router.push('/profile/edit'))}
-          <View style={styles.divider} />
-          {renderSettingItem('shield-checkmark-outline', 'Identity Verification', () => router.push('/profile/verification'))}
-          <View style={styles.divider} />
-          {renderSettingItem(
-            'wallet-outline',
-            'Wallet Settings',
-            () => router.push('/profile/payments'),
-            <Text style={styles.settingRightText}>USD</Text>
-          )}
-          <View style={styles.divider} />
-          {renderSettingItem('lock-closed-outline', 'Security', () => router.push('/profile/security'))}
+        {/* ─── Account ─── */}
+        <Text style={styles.sectionLabel}>Account</Text>
+        <View style={styles.card}>
+          {renderRow('person-outline', 'Edit Profile', () => router.push('/profile/edit'))}
+          {renderRow('shield-checkmark-outline', 'Verification', () => router.push('/profile/verification'))}
+          {renderRow('wallet-outline', 'Wallet', () => router.push('/profile/payments'), { rightText: 'USD' })}
+          {renderRow('lock-closed-outline', 'Security', () => router.push('/profile/security'), { isLast: true })}
         </View>
 
-        <Text style={styles.sectionTitle}>Support</Text>
-        <View style={styles.sectionCard}>
-          {renderSettingItem('help-circle-outline', 'Help & FAQ', () => router.push('/profile/help'))}
+        {/* ─── Support ─── */}
+        <Text style={styles.sectionLabel}>Support</Text>
+        <View style={styles.card}>
+          {renderRow('help-circle-outline', 'Help & FAQ', () => router.push('/profile/help'))}
+          {renderRow('log-out-outline', 'Log Out', () => router.push('/profile/logout'), { isLast: true })}
         </View>
 
-        <Button
-          title="Log Out"
-          onPress={handleLogout}
-          variant="outline"
-          style={styles.logoutBtn}
-        />
-        <Text style={styles.versionText}>Oroya v1.0.0</Text>
+        {/* ─── Footer ─── */}
+        <Text style={styles.version}>Oroya v1.0.0</Text>
       </ScrollView>
     </View>
   );
@@ -131,107 +115,95 @@ const styles = StyleSheet.create({
     backgroundColor: colors.light.background,
   },
   scrollContent: {
-    paddingHorizontal: spacing.xl,
     paddingBottom: 120,
   },
-  profileHeaderCard: {
-    backgroundColor: colors.light.surface,
-    borderRadius: borderRadius.lg,
-    padding: spacing.xl,
+
+  // ─── Profile Header ───
+  profileHeader: {
     alignItems: 'center',
-    marginBottom: spacing.lg,
-    ...shadows.card,
+    paddingTop: spacing['4xl'],
+    paddingBottom: spacing['2xl'],
   },
-  profileName: {
-    ...typography.h2,
-    color: colors.light.textPrimary,
+  name: {
+    fontSize: 22,
     fontWeight: '700',
+    color: colors.light.textPrimary,
     marginTop: spacing.md,
+    letterSpacing: -0.3,
   },
-  profileUsername: {
+  username: {
     ...typography.bodySm,
     color: colors.light.textTertiary,
     marginTop: 2,
   },
-  oroyaIdBox: {
-    width: '100%',
-    marginTop: spacing.lg,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: colors.light.border,
-    backgroundColor: colors.light.background,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+  idChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 6,
+    marginTop: spacing.md,
+    backgroundColor: colors.light.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: borderRadius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.light.borderLight,
   },
-  oroyaIdLabel: {
+  idText: {
+    ...typography.caption,
+    color: colors.light.primary,
+    fontWeight: '700',
+  },
+
+  // ─── Sections ───
+  sectionLabel: {
     ...typography.caption,
     color: colors.light.textTertiary,
     fontWeight: '600',
-  },
-  oroyaIdValue: {
-    ...typography.bodySm,
-    color: colors.light.textPrimary,
-    fontWeight: '800',
-    marginTop: 2,
-  },
-  sectionTitle: {
-    ...typography.h3,
-    color: colors.light.textPrimary,
-    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
     marginTop: spacing.lg,
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.xl,
   },
-  sectionCard: {
+  card: {
     backgroundColor: colors.light.surface,
+    marginHorizontal: spacing.lg,
     borderRadius: borderRadius.lg,
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.lg,
-    ...shadows.card,
+    overflow: 'hidden',
   },
-  settingItem: {
+
+  // ─── Rows ───
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: spacing.lg,
+    paddingVertical: 15,
+    paddingHorizontal: spacing.lg,
   },
-  settingLeft: {
+  rowBorder: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.borderLight,
+  },
+  rowLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
   },
-  settingIconBg: {
-    width: 36,
-    height: 36,
-    borderRadius: borderRadius.sm,
-    backgroundColor: '#F0EDFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  settingLabel: {
+  rowLabel: {
     ...typography.bodySm,
     color: colors.light.textPrimary,
     fontWeight: '500',
   },
-  settingRightText: {
-    ...typography.bodySm,
+  rowRight: {
+    ...typography.caption,
     color: colors.light.textTertiary,
   },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.light.borderLight,
-  },
-  logoutBtn: {
-    marginTop: spacing['2xl'],
-    borderColor: colors.light.error,
-    backgroundColor: 'transparent',
-  },
-  versionText: {
+
+  // ─── Footer ───
+  version: {
     ...typography.caption,
     color: colors.light.textTertiary,
     textAlign: 'center',
-    marginTop: spacing.xl,
+    marginTop: spacing['3xl'],
   },
 });

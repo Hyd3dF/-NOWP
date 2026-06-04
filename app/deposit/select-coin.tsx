@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   Text,
+  TextInput,
   View,
   Pressable,
   SectionList,
@@ -13,7 +14,6 @@ import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 import { spacing, borderRadius } from '@/theme/spacing';
 import { HeaderBar } from '@/components/shared/HeaderBar';
-import { Input } from '@/components/ui/Input';
 import { CoinLogo } from '@/components/ui/CoinLogo';
 import {
   FALLBACK_CURRENCIES,
@@ -28,14 +28,6 @@ const CATEGORIES: PaymentCurrencyCategory[] = [
   'Stablecoins',
   'Other Currencies',
 ];
-
-function chunkRows(items: PaymentCurrency[]) {
-  const rows: PaymentCurrency[][] = [];
-  for (let index = 0; index < items.length; index += 2) {
-    rows.push(items.slice(index, index + 2));
-  }
-  return rows;
-}
 
 export default function SelectCoinScreen() {
   const router = useRouter();
@@ -86,7 +78,7 @@ export default function SelectCoinScreen() {
     () =>
       CATEGORIES.map((category) => ({
         title: category,
-        data: chunkRows(filteredCoins.filter((coin) => coin.category === category)),
+        data: filteredCoins.filter((coin) => coin.category === category),
       })).filter((section) => section.data.length > 0),
     [filteredCoins],
   );
@@ -103,23 +95,26 @@ export default function SelectCoinScreen() {
 
       <View style={styles.content}>
         <View style={styles.searchContainer}>
-          <Input
+          <Ionicons name="search-outline" size={18} color={colors.light.textTertiary} style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
             placeholder="Search coins..."
+            placeholderTextColor={colors.light.textTertiary}
             value={searchQuery}
             onChangeText={setSearchQuery}
-            icon={<Ionicons name="search-outline" size={20} color={colors.light.textTertiary} />}
+            autoCapitalize="none"
           />
         </View>
 
         <SectionList
           sections={sections}
-          keyExtractor={(row, index) => `${row.map((coin) => coin.id).join('-')}-${index}`}
+          keyExtractor={(item) => item.id}
           stickySectionHeadersEnabled={false}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
-          initialNumToRender={10}
-          maxToRenderPerBatch={8}
+          initialNumToRender={15}
+          maxToRenderPerBatch={10}
           windowSize={7}
           ListHeaderComponent={
             isLoading ? (
@@ -133,39 +128,36 @@ export default function SelectCoinScreen() {
             <Text style={styles.categoryTitle}>{section.title}</Text>
           )}
           renderItem={({ item }) => (
-            <View style={styles.coinRow}>
-              {item.map((coin) => (
-                <Pressable
-                  key={coin.id}
-                  style={({ pressed }) => [
-                    styles.coinCard,
-                    pressed && styles.coinCardPressed,
-                  ]}
-                  onPress={() => handleSelectCoin(coin)}
-                >
-                  <CoinLogo symbol={coin.symbol} size={32} style={styles.coinLogo} />
-                  <View style={styles.coinInfo}>
-                    <View style={styles.symbolRow}>
-                      <Text style={styles.coinSymbol}>{coin.symbol}</Text>
-                      {coin.network ? (
-                        <View
-                          style={[
-                            styles.networkBadge,
-                            { backgroundColor: coin.badgeColor || colors.light.primary },
-                          ]}
-                        >
-                          <Text style={styles.networkText}>{coin.network}</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    <Text style={styles.coinName} numberOfLines={1}>
-                      {coin.name}
-                    </Text>
+            <Pressable
+              style={({ pressed }) => [
+                styles.coinRow,
+                pressed && styles.coinRowPressed,
+              ]}
+              onPress={() => handleSelectCoin(item)}
+            >
+              <View style={styles.coinLeft}>
+                <CoinLogo symbol={item.symbol} size={32} style={styles.coinLogo} />
+                <View style={styles.coinInfo}>
+                  <View style={styles.symbolRow}>
+                    <Text style={styles.coinSymbol}>{item.symbol}</Text>
+                    {item.network ? (
+                      <View
+                        style={[
+                          styles.networkBadge,
+                          { backgroundColor: item.badgeColor || colors.light.primary },
+                        ]}
+                      >
+                        <Text style={styles.networkText}>{item.network}</Text>
+                      </View>
+                    ) : null}
                   </View>
-                </Pressable>
-              ))}
-              {item.length === 1 ? <View style={styles.coinCardSpacer} /> : null}
-            </View>
+                  <Text style={styles.coinName} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={colors.light.textTertiary} />
+            </Pressable>
           )}
           ListEmptyComponent={
             <View style={styles.emptyState}>
@@ -187,10 +179,23 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   searchContainer: {
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.light.borderLight,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1.5,
+    borderBottomColor: colors.light.border,
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.md,
+    marginBottom: spacing.sm,
+    height: 44,
+  },
+  searchIcon: {
+    marginRight: spacing.sm,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: colors.light.textPrimary,
+    paddingVertical: spacing.xs,
   },
   scrollContent: {
     paddingHorizontal: spacing.xl,
@@ -216,41 +221,33 @@ const styles = StyleSheet.create({
   },
   coinRow: {
     flexDirection: 'row',
-    gap: spacing.md,
-    marginBottom: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.light.borderLight,
   },
-  coinCard: {
-    flex: 1,
+  coinRowPressed: {
+    backgroundColor: colors.light.borderLight,
+    opacity: 0.8,
+  },
+  coinLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: spacing.sm,
-    backgroundColor: colors.light.surface,
-    borderWidth: 1,
-    borderColor: colors.light.borderLight,
-    borderRadius: borderRadius.md,
-  },
-  coinCardPressed: {
-    backgroundColor: colors.light.borderLight,
-    borderColor: colors.light.border,
-  },
-  coinCardSpacer: {
-    flex: 1,
   },
   coinLogo: {
-    marginRight: spacing.sm,
+    marginRight: spacing.md,
   },
   coinInfo: {
-    flex: 1,
     justifyContent: 'center',
   },
   symbolRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 4,
+    gap: 6,
   },
   coinSymbol: {
-    ...typography.bodySm,
+    fontSize: 15,
     fontWeight: '700',
     color: colors.light.textPrimary,
   },
@@ -266,8 +263,8 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   coinName: {
-    ...typography.caption,
-    color: colors.light.textTertiary,
+    fontSize: 12,
+    color: colors.light.textSecondary,
     marginTop: 2,
   },
   emptyState: {

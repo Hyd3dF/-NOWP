@@ -146,10 +146,19 @@ export default function SendConfirmScreen() {
     try {
       const result = await requestFirebasePhoneVerification();
       setFirebasePnvToken(result.token);
-    } catch {
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+      const message =
+        code === 'firebase_pnv_native_module_missing'
+          ? 'Use an Android development build with Firebase PNV enabled. Expo Go cannot run this verification.'
+          : code === 'firebase_pnv_privacy_policy_missing'
+            ? 'Firebase phone verification requires a configured HTTPS privacy policy URL.'
+            : code === 'firebase_pnv_android_only'
+              ? 'Firebase phone verification is only available on Android.'
+              : 'Firebase phone verification is not available on this device right now.';
       Alert.alert(
         'Firebase verification unavailable',
-        'Firebase phone verification is not available in this build yet.',
+        message,
       );
     } finally {
       setProcessing(false);
@@ -240,7 +249,7 @@ export default function SendConfirmScreen() {
               <PinPad
                 onComplete={handlePinComplete}
                 error={pinError}
-                title="Enter security PIN"
+                title=""
               />
             </View>
           </View>

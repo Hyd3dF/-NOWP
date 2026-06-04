@@ -9,13 +9,12 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
-import { spacing, borderRadius, shadows } from '@/theme/spacing';
+import { spacing, borderRadius } from '@/theme/spacing';
 import { useTransactionStore } from '@/stores/transactionStore';
-import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Badge } from '@/components/ui/Badge';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { formatCurrency, formatDate, formatTime } from '@/utils/format';
@@ -25,6 +24,7 @@ type FilterType = 'all' | 'sent' | 'received' | 'pending' | 'failed';
 
 export default function ActivityScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const {
     filter,
     setFilter,
@@ -57,7 +57,6 @@ export default function ActivityScreen() {
     }, 1000);
   };
 
-  // Helper to group transactions by date
   const getGroupedTransactions = () => {
     const groups: { [key: string]: typeof filteredTxns } = {};
     const visibleTxns = filteredTxns.slice(0, visibleCount);
@@ -98,7 +97,10 @@ export default function ActivityScreen() {
 
   return (
     <View style={styles.container}>
-      <HeaderBar title="Activity" />
+      {/* ─── Header ─── */}
+      <View style={[styles.headerContainer, { paddingTop: insets.top + 12 }]}>
+        <Text style={styles.headerTitle}>Activity</Text>
+      </View>
       
       {/* Filter Pills */}
       <View style={styles.filterContainer}>
@@ -112,9 +114,10 @@ export default function ActivityScreen() {
             return (
               <Pressable
                 key={f.value}
-                style={[
+                style={({ pressed }) => [
                   styles.filterPill,
                   isActive && styles.filterPillActive,
+                  pressed && { opacity: 0.8 },
                 ]}
                 onPress={() => setFilter(f.value)}
               >
@@ -136,23 +139,37 @@ export default function ActivityScreen() {
       <View style={styles.listContainer}>
         {error ? (
           <EmptyState
+            iconName="cloud-offline-outline"
+            iconColor={colors.light.textTertiary}
+            iconGradient={['#F3F4F6', '#E5E7EB']}
             title="Activity is unavailable"
             subtitle="We could not load your transactions right now. Please try again in a moment."
           />
         ) : txnsLoading ? (
-          <View style={{ flex: 1 }}>
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <View key={i} style={styles.txnRowSkeleton}>
-                <View style={styles.txnLeft}>
-                  <Skeleton width={36} height={36} borderRadius={6} />
-                  <View style={[styles.txnInfo, { gap: 6 }]}>
-                    <Skeleton width={120} height={14} borderRadius={4} />
-                    <Skeleton width={80} height={10} borderRadius={4} />
+          <View style={{ flex: 1, marginTop: spacing.md }}>
+            <View style={styles.cardSkeleton}>
+              {[1, 2, 3, 4, 5].map((i, index) => {
+                const isLast = index === 4;
+                return (
+                  <View
+                    key={i}
+                    style={[
+                      styles.txnRowSkeleton,
+                      !isLast && styles.rowDivider,
+                    ]}
+                  >
+                    <View style={styles.txnLeft}>
+                      <Skeleton width={36} height={36} borderRadius={18} />
+                      <View style={[styles.txnInfo, { gap: 6 }]}>
+                        <Skeleton width={120} height={14} borderRadius={4} />
+                        <Skeleton width={80} height={10} borderRadius={4} />
+                      </View>
+                    </View>
+                    <Skeleton width={70} height={16} borderRadius={4} />
                   </View>
-                </View>
-                <Skeleton width={70} height={16} borderRadius={4} />
-              </View>
-            ))}
+                );
+              })}
+            </View>
           </View>
         ) : (
           <SectionList
@@ -165,11 +182,19 @@ export default function ActivityScreen() {
                 <Text style={styles.sectionHeaderText}>{title}</Text>
               </View>
             )}
-            renderItem={({ item }) => {
+            renderItem={({ item, index, section }) => {
               const isSend = item.type === 'send' || item.type === 'withdrawal';
+              const isFirst = index === 0;
+              const isLast = index === section.data.length - 1;
               return (
                 <Pressable
-                  style={styles.txnRow}
+                  style={({ pressed }) => [
+                    styles.txnRow,
+                    isFirst && styles.rowFirst,
+                    isLast && styles.rowLast,
+                    !isLast && styles.rowDivider,
+                    pressed && { backgroundColor: colors.light.borderLight },
+                  ]}
                   onPress={() => router.push({ pathname: '/activity/[id]', params: { id: item.id } })}
                 >
                   <View style={styles.txnLeft}>
@@ -222,14 +247,19 @@ export default function ActivityScreen() {
             onEndReached={handleLoadMore}
             onEndReachedThreshold={0.1}
             ListEmptyComponent={
-              <EmptyState
-                title={filter === 'all' ? 'No transactions yet' : `No ${filter} transactions`}
-                subtitle={
-                  filter === 'all'
-                    ? 'Send, receive, or deposit funds to see activity here.'
-                    : 'Try another filter or check back after your next transaction.'
-                }
-              />
+              <View style={{ marginTop: spacing['2xl'] }}>
+                <EmptyState
+                  iconName={filter === 'all' ? 'swap-horizontal-outline' : 'search-outline'}
+                  iconColor={colors.light.primary}
+                  iconGradient={['#F0EDFF', '#E8E4FF']}
+                  title={filter === 'all' ? 'No transactions yet' : `No ${filter} transactions`}
+                  subtitle={
+                    filter === 'all'
+                      ? 'Send, receive, or deposit funds to see activity here.'
+                      : 'Try another filter or check back after your next transaction.'
+                  }
+                />
+              </View>
             }
           />
         )}
@@ -243,64 +273,92 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.light.background,
   },
+
+  // ─── Header ───
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    backgroundColor: colors.light.background,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.light.textPrimary,
+  },
+
+  // ─── Filters ───
   filterContainer: {
-    height: 48,
+    height: 40,
     marginVertical: spacing.sm,
   },
   filterScroll: {
-    paddingHorizontal: spacing.xl,
+    paddingHorizontal: spacing.lg,
     gap: spacing.sm,
     alignItems: 'center',
   },
   filterPill: {
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: 18,
+    paddingVertical: 7,
     borderRadius: borderRadius.full,
-    backgroundColor: colors.light.surface,
-    borderWidth: 1,
-    borderColor: colors.light.borderLight,
-    ...shadows.card,
-    elevation: 1,
+    backgroundColor: colors.light.borderLight,
   },
   filterPillActive: {
     backgroundColor: colors.light.primary,
-    borderColor: colors.light.primary,
   },
   filterLabel: {
     ...typography.bodySm,
     color: colors.light.textSecondary,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   filterLabelActive: {
     color: '#FFFFFF',
-    fontWeight: '600',
   },
+
+  // ─── List Layout ───
   listContainer: {
     flex: 1,
-    paddingHorizontal: spacing.xl,
   },
   listContent: {
-    paddingBottom: 100, // Bottom tab space
+    paddingBottom: 120, // TabBar + FAB padding
   },
   sectionHeader: {
-    paddingVertical: spacing.sm,
     backgroundColor: colors.light.background,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.sm,
   },
   sectionHeaderText: {
-    ...typography.bodySm,
+    ...typography.caption,
     color: colors.light.textTertiary,
     fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
   },
+
+  // ─── Custom Card Rows ───
   txnRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: spacing.md,
+    paddingVertical: 14,
+    paddingHorizontal: spacing.lg,
     backgroundColor: colors.light.surface,
-    borderRadius: borderRadius.md,
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.sm,
-    ...shadows.card,
+    marginHorizontal: spacing.lg,
+  },
+  rowFirst: {
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  rowLast: {
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+  },
+  rowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.light.borderLight,
   },
   txnLeft: {
     flexDirection: 'row',
@@ -311,7 +369,7 @@ const styles = StyleSheet.create({
   iconBg: {
     width: 36,
     height: 36,
-    borderRadius: borderRadius.sm,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -321,7 +379,7 @@ const styles = StyleSheet.create({
   txnPartner: {
     ...typography.bodySm,
     color: colors.light.textPrimary,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   txnSubInfo: {
     flexDirection: 'row',
@@ -353,14 +411,20 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: colors.light.textSecondary,
   },
+
+  // ─── Skeleton ───
+  cardSkeleton: {
+    backgroundColor: colors.light.surface,
+    marginHorizontal: spacing.lg,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
   txnRowSkeleton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: spacing.md,
+    paddingVertical: 14,
+    paddingHorizontal: spacing.lg,
     backgroundColor: colors.light.surface,
-    borderRadius: borderRadius.md,
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.sm,
   },
 });
