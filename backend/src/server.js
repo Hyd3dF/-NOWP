@@ -1,4 +1,5 @@
 const http = require('node:http');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const logger = require('./logger');
@@ -211,8 +212,20 @@ async function start() {
 
   const server = http.createServer((req, res) => {
     handleRequest(req, res).catch((error) => {
+      const requestId = crypto.randomBytes(8).toString('hex');
+      if (!error.details || typeof error.details !== 'object' || Array.isArray(error.details)) {
+        error.details = {};
+      }
+      error.details.request_id = requestId;
       const { status, body } = getSafeErrorResponse(error);
-      logger.warn('request_error', { status, code: body?.error?.code, message: error.message });
+      logger.warn('request_error', {
+        status,
+        code: body?.code || body?.details?.code || '',
+        request_id: requestId,
+        method: req.method || '',
+        path: req.url ? new URL(req.url, 'http://localhost').pathname : '',
+        message: error.message,
+      });
       sendJson(res, status, body);
     });
   });

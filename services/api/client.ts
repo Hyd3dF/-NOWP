@@ -28,12 +28,14 @@ const SECURE_STORE_OPTIONS = {
 export class ApiError extends Error {
   code: string;
   status?: number;
+  requestId?: string;
 
-  constructor(code: string, status?: number) {
+  constructor(code: string, status?: number, requestId?: string) {
     super(code);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
+    this.requestId = requestId;
   }
 }
 
@@ -155,7 +157,7 @@ class OroyaApiClient {
       ) {
         await setDeviceToken(null);
       }
-      throw new ApiError(errorCode, response.status);
+      throw new ApiError(errorCode, response.status, getRequestId(data));
     }
 
     captureDeviceToken(data);
@@ -300,4 +302,18 @@ function getRandomId() {
 
 export function createIdempotencyKey(prefix = 'req') {
   return `${prefix}_${getRandomId()}`.replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 120);
+}
+
+function getRequestId(data: unknown) {
+  if (!data || typeof data !== 'object') return '';
+  const topLevel = 'request_id' in data ? String((data as { request_id?: unknown }).request_id || '') : '';
+  const details =
+    'details' in data &&
+    (data as { details?: unknown }).details &&
+    typeof (data as { details?: unknown }).details === 'object'
+      ? (data as { details?: { request_id?: unknown } }).details
+      : null;
+  const nested = details?.request_id ? String(details.request_id) : '';
+  const value = topLevel || nested;
+  return /^[a-f0-9]{8,32}$/i.test(value) ? value : '';
 }

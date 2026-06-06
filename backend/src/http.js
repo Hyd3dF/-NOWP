@@ -18,6 +18,7 @@ const PUBLIC_DETAIL_KEYS = new Set([
   'currency',
   'network',
   'external_ingress_denied',
+  'request_id',
 ]);
 
 function sendJson(res, status, body) {
@@ -162,14 +163,18 @@ function getSafeErrorResponse(error) {
   const isServerError = status >= 500;
   const message = isServerError ? 'Internal server error.' : error.message;
   const details = isServerError ? undefined : getPublicDetails(error.details);
+  const serverDetails = isServerError ? getPublicDetails(error.details) : undefined;
+  const requestId = details?.request_id || serverDetails?.request_id;
+  const code = details?.code || serverDetails?.code;
 
   return {
     status,
     body: {
       success: false,
       error: message,
-      ...(details?.code ? { code: details.code } : {}),
+      ...(code ? { code } : {}),
       ...(details ? { details } : {}),
+      ...(requestId ? { request_id: requestId } : {}),
     },
   };
 }

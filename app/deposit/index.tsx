@@ -98,7 +98,10 @@ export default function DepositScreen() {
       router.push('/deposit/result');
     } catch (error) {
       const message = error instanceof ApiError ? getDepositErrorMessage(error.code) : '';
-      setError(message || 'Deposit address could not be created right now. Please try again in a moment.');
+      const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
+      setError(
+        `${message || 'Deposit address could not be created right now. Please try again in a moment.'}${requestId}`,
+      );
     } finally {
       setIsLoading(false);
     }
@@ -308,8 +311,20 @@ const styles = StyleSheet.create({
 function getDepositErrorMessage(code: string) {
   switch (code) {
     case 'auth_failed':
+    case 'auth_required':
+    case 'token_revoked':
+    case 'token_invalid_iat':
       return 'Please sign in again before creating a deposit address.';
+    case 'device_token_required':
+    case 'device_token_invalid':
+    case 'device_token_revoked':
+    case 'device_token_mismatch':
+      return 'This device session needs to be refreshed. Please sign out and sign in again.';
+    case 'idempotency_key_required':
+      return 'Deposit request could not be prepared securely. Please try again.';
     case 'validation_failed':
+    case 'invalid_amount':
+    case 'invalid_amount_precision':
       return 'Check the amount and selected network, then try again.';
     case 'minimum_deposit_amount':
       return 'This amount is below the minimum for the selected crypto. Increase the amount and try again.';

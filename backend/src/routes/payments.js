@@ -205,7 +205,7 @@ async function createDeposit(req, res) {
 
   const amount = parseAmount(body.amount);
   const currency = normalizeCode(body.currency, 'currency');
-  const network = normalizeCode(body.network, 'network');
+  const network = normalizeCode(body.network || body.pay_currency || body.currency, 'network');
   const idempotencyKey = requireIdempotencyKey(req, body);
   const referenceId = createIdempotentReferenceId(user.id, idempotencyKey);
 
