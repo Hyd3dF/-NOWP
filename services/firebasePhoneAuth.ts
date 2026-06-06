@@ -23,6 +23,10 @@ export class FirebasePhoneAuthError extends Error {
   }
 }
 
+export function isFirebasePhoneAuthAvailable() {
+  return Boolean(NativeModules.RNFBAppModule && NativeModules.RNFBAuthModule);
+}
+
 export async function startFirebasePhoneOtp(phoneNumber: string) {
   assertFirebaseNativeAvailable();
   const cleanPhone = phoneNumber.trim().replace(/\s+/g, '');

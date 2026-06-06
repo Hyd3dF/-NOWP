@@ -21,7 +21,11 @@ import { Button } from '@/components/ui/Button';
 import { CoinLogo } from '@/components/ui/CoinLogo';
 import { ApiError, api, createIdempotencyKey } from '@/services/api/client';
 import { startMoneySmsOtp, verifyMoneySmsOtp } from '@/services/api/smsOtp';
-import { confirmFirebasePhoneOtp, startFirebasePhoneOtp } from '@/services/firebasePhoneAuth';
+import {
+  confirmFirebasePhoneOtp,
+  isFirebasePhoneAuthAvailable,
+  startFirebasePhoneOtp,
+} from '@/services/firebasePhoneAuth';
 import { isValidAmount } from '@/utils/validation';
 import {
   FALLBACK_CURRENCIES,
@@ -107,6 +111,11 @@ export default function DepositScreen() {
 
     if (!isValidAmount(amount)) {
       setError('Enter an amount greater than zero to create a deposit address.');
+      return;
+    }
+
+    if (!isFirebasePhoneAuthAvailable()) {
+      setError(getDepositErrorMessage('phone_verification_build_required'));
       return;
     }
 
@@ -457,6 +466,10 @@ function getDepositErrorMessage(code: string) {
       return 'Your phone number must include the country code before SMS verification can be used.';
     case 'sms_provider_not_configured':
       return 'SMS verification is not configured yet. Please contact support.';
+    case 'rate_limited':
+      return 'Too many verification attempts. Please wait a moment and try again.';
+    case 'phone_verification_build_required':
+      return 'Phone verification is not available in this app build. Please install the latest app build.';
     case 'firebase_auth_not_configured':
       return 'Phone verification is not configured yet. Please contact support.';
     case 'firebase_auth_native_module_missing':

@@ -20,7 +20,11 @@ import { useTransactionStore } from '@/stores/transactionStore';
 import { ApiError, createIdempotencyKey } from '@/services/api/client';
 import { sendInternalTransfer } from '@/services/api/transfers';
 import { startMoneySmsOtp, verifyMoneySmsOtp } from '@/services/api/smsOtp';
-import { confirmFirebasePhoneOtp, startFirebasePhoneOtp } from '@/services/firebasePhoneAuth';
+import {
+  confirmFirebasePhoneOtp,
+  isFirebasePhoneAuthAvailable,
+  startFirebasePhoneOtp,
+} from '@/services/firebasePhoneAuth';
 import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Avatar } from '@/components/ui/Avatar';
 import { Card } from '@/components/ui/Card';
@@ -91,6 +95,9 @@ export default function SendConfirmScreen() {
     const idempotencyKey = createIdempotencyKey('tr');
 
     try {
+      if (!isFirebasePhoneAuthAvailable()) {
+        throw { code: 'phone_verification_build_required' };
+      }
       const started = await startMoneySmsOtp({
         purpose: 'transfer',
         receiverUserId: recipientId || '',
@@ -412,6 +419,8 @@ function getTransferErrorMessage(error: unknown) {
       sms_phone_missing: 'Add a phone number before sending money.',
       sms_phone_invalid: 'Your phone number must include the country code before SMS verification can be used.',
       sms_provider_not_configured: 'SMS verification is not configured yet. Please contact support.',
+      rate_limited: 'Too many verification attempts. Please wait a moment and try again.',
+      phone_verification_build_required: 'Phone verification is not available in this app build. Please install the latest app build.',
       firebase_auth_not_configured: 'Phone verification is not configured yet. Please contact support.',
       firebase_auth_native_module_missing: 'Phone verification is not available in this app build. Please install the latest app build.',
       firebase_auth_quota_exceeded: 'SMS verification limit has been reached. Please try again later.',
