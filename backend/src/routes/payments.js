@@ -12,6 +12,10 @@ const { nowPayments } = require('../nowpayments');
 const { pocketBase } = require('../pocketbase');
 const { enforceRateLimit } = require('../rateLimit');
 const { verifyDeviceToken } = require('../deviceToken');
+const {
+  canonicalMoneyOtpContext,
+  verifyAndConsumeSmsOtpTicket,
+} = require('../smsOtp');
 const { verifyNowPaymentsSignature } = require('../webhookSignature');
 
 const DEPOSIT_MAX_PER_MIN = 10;
@@ -206,6 +210,12 @@ async function createDeposit(req, res) {
   const amount = parseAmount(body.amount);
   const currency = normalizeCode(body.currency, 'currency');
   const network = normalizeCode(body.network || body.pay_currency || body.currency, 'network');
+  await verifyAndConsumeSmsOtpTicket({
+    ticket: body.sms_otp_ticket,
+    userId: user.id,
+    purpose: 'deposit',
+    context: canonicalMoneyOtpContext({ purpose: 'deposit', amount, currency, network }),
+  });
   const idempotencyKey = requireIdempotencyKey(req, body);
   const referenceId = createIdempotentReferenceId(user.id, idempotencyKey);
 

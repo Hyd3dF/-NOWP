@@ -34,6 +34,7 @@ const {
   updateTwoFactor,
   verifyPin,
 } = require('./routes/security');
+const { startMoneySmsOtp, verifyMoneySmsOtp } = require('./routes/smsOtp');
 const { myTransactions } = require('./routes/transactions');
 const { sendTransfer, startTransferTwoFactorChallenge } = require('./routes/transfers');
 const { me, paymentProfile, updateMe } = require('./routes/users');
@@ -64,6 +65,8 @@ const routes = new Map([
   ['GET /security/overview', securityOverview],
   ['POST /security/biometric-lock', updateBiometricLock],
   ['POST /security/two-factor', updateTwoFactor],
+  ['POST /security/sms-otp/start', startMoneySmsOtp],
+  ['POST /security/sms-otp/verify', verifyMoneySmsOtp],
   ['POST /security/verify-pin', verifyPin],
   ['POST /security/change-pin', changePin],
   ['POST /security/change-password', changePassword],

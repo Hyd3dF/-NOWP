@@ -810,10 +810,11 @@ class PocketBaseClient {
     return record;
   }
 
-  async consumeTwoFactorOtp(userId, purpose, codeHash) {
+  async consumeTwoFactorOtp(userId, purpose, codeHash, context = '') {
     const maxFailures = Number(process.env.OROYA_2FA_MAX_FAILED_ATTEMPTS || 5);
+    const contextFilter = context ? ` && context = "${escapeFilterValue(context)}"` : '';
     const filter = encodeURIComponent(
-      `user_id = "${escapeFilterValue(userId)}" && purpose = "${escapeFilterValue(purpose)}" && consumed_at = "" && expires_at >= "${new Date().toISOString()}"`,
+      `user_id = "${escapeFilterValue(userId)}" && purpose = "${escapeFilterValue(purpose)}"${contextFilter} && consumed_at = "" && expires_at >= "${new Date().toISOString()}"`,
     );
     const result = await this.adminRequest(
       `/api/collections/two_factor_otps/records?filter=${filter}&perPage=1&sort=-created_at`,

@@ -6,8 +6,7 @@ interface SendTransferInput {
   currency: string;
   note?: string;
   pin: string;
-  twoFactorTicket?: string;
-  firebasePnvToken?: string;
+  smsOtpTicket?: string;
   idempotencyKey?: string;
 }
 
@@ -34,8 +33,7 @@ export async function sendInternalTransfer(input: SendTransferInput) {
     currency: input.currency,
     note: input.note || '',
     pin: input.pin,
-    two_factor_ticket: input.twoFactorTicket,
-    firebase_pnv_token: input.firebasePnvToken,
+    sms_otp_ticket: input.smsOtpTicket,
     idempotency_key: idempotencyKey,
   }, {
     'X-Idempotency-Key': idempotencyKey,
@@ -45,8 +43,8 @@ export async function sendInternalTransfer(input: SendTransferInput) {
 interface TransferTwoFactorChallengeResponse {
   success: boolean;
   two_factor_required: boolean;
-  two_factor_method?: 'firebase_pnv';
-  ticket?: string;
+  two_factor_method?: 'sms_otp';
+  dev_otp?: string;
   expires_at?: string;
 }
 

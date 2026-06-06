@@ -18,8 +18,8 @@ import { useSendStore } from '@/stores/sendStore';
 import { useWalletStore } from '@/stores/walletStore';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { ApiError, createIdempotencyKey } from '@/services/api/client';
-import { sendInternalTransfer, startTransferTwoFactorChallenge } from '@/services/api/transfers';
-import { requestFirebasePhoneVerification } from '@/services/firebasePnv';
+import { sendInternalTransfer } from '@/services/api/transfers';
+import { startMoneySmsOtp, verifyMoneySmsOtp } from '@/services/api/smsOtp';
 import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Avatar } from '@/components/ui/Avatar';
 import { Card } from '@/components/ui/Card';
@@ -38,8 +38,8 @@ export default function SendConfirmScreen() {
   const [processing, setProcessing] = useState(false);
   const [pinError, setPinError] = useState('');
   const [twoFactorVisible, setTwoFactorVisible] = useState(false);
-  const [firebasePnvToken, setFirebasePnvToken] = useState('');
-  const [twoFactorTicket, setTwoFactorTicket] = useState('');
+  const [smsOtpCode, setSmsOtpCode] = useState('');
+  const [smsOtpHint, setSmsOtpHint] = useState('');
   const [pendingPin, setPendingPin] = useState('');
   const [pendingIdempotencyKey, setPendingIdempotencyKey] = useState('');
 
@@ -51,8 +51,7 @@ export default function SendConfirmScreen() {
 
   const completeTransfer = async (
     pin: string,
-    ticket?: string,
-    phoneVerificationToken?: string,
+    smsOtpTicket?: string,
     idempotencyKey?: string,
   ) => {
     const response = await sendInternalTransfer({
@@ -61,8 +60,7 @@ export default function SendConfirmScreen() {
       currency: wallet?.currency || 'USD',
       note,
       pin,
-      twoFactorTicket: ticket,
-      firebasePnvToken: phoneVerificationToken,
+      smsOtpTicket,
       idempotencyKey,
     });
     const transaction = response.transaction;
@@ -91,21 +89,17 @@ export default function SendConfirmScreen() {
     const idempotencyKey = createIdempotencyKey('tr');
 
     try {
-      const challenge = await startTransferTwoFactorChallenge({
+      const started = await startMoneySmsOtp({
+        purpose: 'transfer',
         receiverUserId: recipientId || '',
         amount: numAmount,
         currency: wallet?.currency || 'USD',
       });
-      if (challenge.two_factor_required) {
-        setPendingPin(pin);
-        setPendingIdempotencyKey(idempotencyKey);
-        setTwoFactorTicket(challenge.ticket || '');
-        setFirebasePnvToken('');
-        setTwoFactorVisible(true);
-        return;
-      }
-
-      await completeTransfer(pin, undefined, undefined, idempotencyKey);
+      setPendingPin(pin);
+      setPendingIdempotencyKey(idempotencyKey);
+      setSmsOtpCode('');
+      setSmsOtpHint(started.dev_otp ? `Dev code: ${started.dev_otp}` : 'Enter the SMS code sent to your phone.');
+      setTwoFactorVisible(true);
     } catch (error) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       Alert.alert('Transfer not completed', getTransferErrorMessage(error));
@@ -115,20 +109,22 @@ export default function SendConfirmScreen() {
   };
 
   const handleTwoFactorSubmit = async () => {
-    if (firebasePnvToken.trim().length < 40) {
-      Alert.alert('Verification required', 'Complete Firebase phone verification before sending.');
+    if (!/^\d{6}$/.test(smsOtpCode.trim())) {
+      Alert.alert('Verification required', 'Enter the 6-digit SMS code before sending.');
       return;
     }
 
     setTwoFactorVisible(false);
     setProcessing(true);
     try {
-      await completeTransfer(
-        pendingPin,
-        twoFactorTicket,
-        firebasePnvToken.trim(),
-        pendingIdempotencyKey,
-      );
+      const verified = await verifyMoneySmsOtp({
+        purpose: 'transfer',
+        receiverUserId: recipientId || '',
+        amount: numAmount,
+        currency: wallet?.currency || 'USD',
+        code: smsOtpCode.trim(),
+      });
+      await completeTransfer(pendingPin, verified.sms_otp_ticket, pendingIdempotencyKey);
     } catch (error) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       Alert.alert('Transfer not completed', getTransferErrorMessage(error));
@@ -136,32 +132,7 @@ export default function SendConfirmScreen() {
       setProcessing(false);
       setPendingPin('');
       setPendingIdempotencyKey('');
-      setTwoFactorTicket('');
-      setFirebasePnvToken('');
-    }
-  };
-
-  const handleFirebasePhoneVerification = async () => {
-    setProcessing(true);
-    try {
-      const result = await requestFirebasePhoneVerification();
-      setFirebasePnvToken(result.token);
-    } catch (error) {
-      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
-      const message =
-        code === 'firebase_pnv_native_module_missing'
-          ? 'Use an Android development build with Firebase PNV enabled. Expo Go cannot run this verification.'
-          : code === 'firebase_pnv_privacy_policy_missing'
-            ? 'Firebase phone verification requires a configured HTTPS privacy policy URL.'
-            : code === 'firebase_pnv_android_only'
-              ? 'Firebase phone verification is only available on Android.'
-              : 'Firebase phone verification is not available on this device right now.';
-      Alert.alert(
-        'Firebase verification unavailable',
-        message,
-      );
-    } finally {
-      setProcessing(false);
+      setSmsOtpCode('');
     }
   };
 
@@ -265,22 +236,21 @@ export default function SendConfirmScreen() {
         <SafeAreaView style={styles.modalContainer}>
           <HeaderBar title="Verify Transfer" showBack onBack={() => setTwoFactorVisible(false)} />
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Phone Verification</Text>
+            <Text style={styles.modalTitle}>SMS Verification</Text>
             <Text style={styles.modalSubtitle}>
-              Complete Firebase phone verification to authorize this {formatCurrency(numAmount)} transfer.
+              {smsOtpHint || `Enter the SMS code to authorize this ${formatCurrency(numAmount)} transfer.`}
             </Text>
             <TextInput
-              value={firebasePnvToken}
-              onChangeText={setFirebasePnvToken}
-              keyboardType="default"
+              value={smsOtpCode}
+              onChangeText={(value) => setSmsOtpCode(value.replace(/[^0-9]/g, '').slice(0, 6))}
+              keyboardType="number-pad"
+              maxLength={6}
               autoCapitalize="none"
               autoCorrect={false}
-              secureTextEntry
               style={styles.twoFactorInput}
               textAlign="center"
             />
-            <Button title="Start Firebase Verification" onPress={handleFirebasePhoneVerification} fullWidth />
-            <Button title="Verify Phone & Send" onPress={handleTwoFactorSubmit} fullWidth />
+            <Button title="Verify SMS & Send" onPress={handleTwoFactorSubmit} fullWidth />
           </View>
         </SafeAreaView>
       </Modal>
@@ -424,6 +394,13 @@ function getTransferErrorMessage(error: unknown) {
       daily_receive_count_limit: 'The receiver has reached today\'s receive limit.',
       receiver_not_found: 'The receiver account could not be found.',
       self_transfer_not_allowed: 'You cannot send money to yourself.',
+      sms_phone_missing: 'Add a phone number before sending money.',
+      sms_phone_invalid: 'Your phone number must include the country code before SMS verification can be used.',
+      sms_provider_not_configured: 'SMS verification is not configured yet. Please contact support.',
+      sms_otp_required: 'Complete SMS verification to send this transfer.',
+      sms_otp_invalid: 'The SMS code is incorrect or expired. Request a new code and try again.',
+      sms_otp_locked: 'Too many incorrect SMS codes. Request a new code and try again.',
+      sms_otp_ticket_used: 'This SMS verification was already used. Request a new code and try again.',
       two_factor_required: 'Complete phone verification to send this transfer.',
       firebase_pnv_token_invalid: 'Firebase phone verification failed.',
       firebase_pnv_token_expired: 'Firebase phone verification expired. Please verify again.',

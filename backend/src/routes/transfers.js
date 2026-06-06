@@ -4,7 +4,11 @@ const { HttpError, getBearerToken, getRequestContext, parseJsonBody, sendJson } 
 const { pocketBase } = require('../pocketbase');
 const { enforceRateLimit } = require('../rateLimit');
 const { verifyDeviceToken } = require('../deviceToken');
-const { phoneNumbersMatch, verifyFirebasePnvToken } = require('../firebasePnv');
+const {
+  canonicalMoneyOtpContext,
+  startSmsOtp,
+  verifyAndConsumeSmsOtpTicket,
+} = require('../smsOtp');
 
 const transferLocks = new Map();
 const TRANSFER_MAX_PER_MIN = 30;
@@ -194,46 +198,23 @@ async function sendTransfer(req, res) {
   await pocketBase.verifyUserPin(sender, body.pin);
 
   if (await isTwoFactorRequiredForTransfer(sender, amount)) {
-    const ticket = String(body.two_factor_ticket || '').trim();
-    const firebasePnvToken = String(
-      body.firebase_pnv_token ||
-        body.firebasePhoneVerificationToken ||
-        body.phone_verification_token ||
-        '',
-    ).trim();
-    if (!ticket || !firebasePnvToken) {
-      throw new HttpError(401, 'Two-factor authentication is required for this transfer.', {
-        code: 'two_factor_required',
+    const smsOtpTicket = String(body.sms_otp_ticket || '').trim();
+    if (!smsOtpTicket) {
+      throw new HttpError(401, 'SMS verification is required for this transfer.', {
+        code: 'sms_otp_required',
       });
     }
-    const verifiedTicket = verifyTransferChallengeTicket(ticket, {
+    await verifyAndConsumeSmsOtpTicket({
+      ticket: smsOtpTicket,
       userId: sender.id,
-      amount,
-      receiverUserId: receiver.id,
-      currency,
+      purpose: 'transfer',
+      context: canonicalMoneyOtpContext({
+        purpose: 'transfer',
+        amount,
+        currency,
+        receiverUserId: receiver.id,
+      }),
     });
-    if (!verifiedTicket) {
-      throw new HttpError(401, 'Two-factor challenge is invalid or expired.', {
-        code: 'two_factor_ticket_invalid',
-      });
-    }
-    const firebaseVerification = await verifyFirebasePnvToken(firebasePnvToken);
-    if (!phoneNumbersMatch(firebaseVerification.phoneNumber, sender.phone)) {
-      await pocketBase.createAuditLog({
-        userId: sender.id,
-        action: 'transfers.firebase_phone_mismatch',
-        ...requestContext,
-        metadata: {
-          amount,
-          currency,
-          verified_phone_hash: hashForAudit(firebaseVerification.phoneNumber),
-          account_phone_hash: hashForAudit(sender.phone || ''),
-        },
-      });
-      throw new HttpError(401, 'Verified Firebase phone number does not match this account.', {
-        code: 'firebase_phone_mismatch',
-      });
-    }
   }
 
   const result = await withTransferLock(
@@ -443,34 +424,24 @@ async function startTransferTwoFactorChallenge(req, res) {
     return;
   }
 
-  const expiresAtMs = Date.now() + TRANSFER_2FA_TTL_MS;
-
-  const ticket = createTransferChallengeTicket({
-    userId: sender.id,
-    amount,
-    receiverUserId: receiver.id,
-    currency,
-    expiresAt: expiresAtMs,
-  });
-
-  await pocketBase.createAuditLog({
-    userId: sender.id,
-    action: 'transfers.two_factor_challenge_issued',
-    ...requestContext,
-    metadata: {
+  const started = await startSmsOtp({
+    user: sender,
+    purpose: 'transfer',
+    context: canonicalMoneyOtpContext({
+      purpose: 'transfer',
       amount,
       currency,
-      receiver_user_id_hash: hashForAudit(receiver.id),
-      ticket_expires_at: new Date(expiresAtMs).toISOString(),
-    },
+      receiverUserId: receiver.id,
+    }),
+    requestContext,
   });
 
   const response = {
     success: true,
     two_factor_required: true,
-    two_factor_method: 'firebase_pnv',
-    ticket,
-    expires_at: new Date(expiresAtMs).toISOString(),
+    two_factor_method: 'sms_otp',
+    expires_at: started.expires_at,
+    ...(started.dev_otp ? { dev_otp: started.dev_otp } : {}),
   };
   sendJson(res, 200, response);
 }

@@ -1209,6 +1209,164 @@ describe('Payment device-token boundary', () => {
       nowPayments.getMerchantCurrencies = originals.getMerchantCurrencies;
     }
   });
+
+  test('deposit creation rejects a real request when SMS OTP ticket is missing', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const { nowPayments } = require('../src/nowpayments');
+    const { createDeposit } = require('../src/routes/payments');
+    const { headers, tokenHash } = makeDeviceAuthHeaders('u1', 'bearer-token');
+    const originals = {
+      adminRequest: pocketBase.adminRequest,
+      authenticateBearer: pocketBase.authenticateBearer,
+      findDeviceTokenByHash: pocketBase.findDeviceTokenByHash,
+      findPaymentIntent: pocketBase.findPaymentIntent,
+      createPaymentIntent: pocketBase.createPaymentIntent,
+      createAuditLog: pocketBase.createAuditLog,
+      getMinimumAmount: nowPayments.getMinimumAmount,
+      createPayment: nowPayments.createPayment,
+    };
+    let providerCalls = 0;
+    try {
+      pocketBase.adminRequest = mockRateLimitAdminRequest();
+      pocketBase.authenticateBearer = async () => ({ id: 'u1', email: 'u1@example.com' });
+      pocketBase.findDeviceTokenByHash = async (hash) => {
+        assert.equal(hash, tokenHash);
+        return { id: 'dt_u1', revoked_at: '' };
+      };
+      pocketBase.findPaymentIntent = async () => null;
+      pocketBase.createPaymentIntent = async () => {
+        throw new Error('payment intent should not be created before SMS OTP');
+      };
+      pocketBase.createAuditLog = async () => ({ id: 'audit' });
+      nowPayments.getMinimumAmount = async () => {
+        providerCalls += 1;
+        return 1;
+      };
+      nowPayments.createPayment = async () => {
+        providerCalls += 1;
+        return {};
+      };
+
+      await assert.rejects(
+        createDeposit(
+          makeHttpReq({
+            method: 'POST',
+            url: '/payments/create-deposit',
+            headers: { ...headers, 'x-idempotency-key': 'dep_sms_required_123456' },
+            body: {
+              amount: 20,
+              currency: 'usd',
+              network: 'btc',
+              idempotency_key: 'dep_sms_required_123456',
+            },
+          }),
+          makeJsonRes(),
+        ),
+        (error) => error.details?.code === 'sms_otp_required',
+      );
+      assert.equal(providerCalls, 0);
+    } finally {
+      Object.assign(pocketBase, originals);
+      nowPayments.getMinimumAmount = originals.getMinimumAmount;
+      nowPayments.createPayment = originals.createPayment;
+    }
+  });
+
+  test('deposit creation proceeds with a valid shared SMS OTP ticket', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const { nowPayments } = require('../src/nowpayments');
+    const { createDeposit } = require('../src/routes/payments');
+    const { canonicalMoneyOtpContext, createSmsOtpTicket } = require('../src/smsOtp');
+    const { headers, tokenHash } = makeDeviceAuthHeaders('u1', 'bearer-token');
+    const originals = {
+      adminRequest: pocketBase.adminRequest,
+      authenticateBearer: pocketBase.authenticateBearer,
+      findDeviceTokenByHash: pocketBase.findDeviceTokenByHash,
+      findPaymentIntent: pocketBase.findPaymentIntent,
+      createPaymentIntent: pocketBase.createPaymentIntent,
+      createAuditLog: pocketBase.createAuditLog,
+      touchDeviceToken: pocketBase.touchDeviceToken,
+      recordWebhookNonce: pocketBase.recordWebhookNonce,
+      getMinimumAmount: nowPayments.getMinimumAmount,
+      createPayment: nowPayments.createPayment,
+    };
+    let nonceRecords = 0;
+    let providerCalls = 0;
+    try {
+      pocketBase.adminRequest = mockRateLimitAdminRequest();
+      pocketBase.authenticateBearer = async () => ({ id: 'u1', email: 'u1@example.com' });
+      pocketBase.findDeviceTokenByHash = async (hash) => {
+        assert.equal(hash, tokenHash);
+        return { id: 'dt_u1', revoked_at: '' };
+      };
+      pocketBase.findPaymentIntent = async () => null;
+      pocketBase.recordWebhookNonce = async (nonce, source) => {
+        assert.match(nonce, /^sms_otp_ticket:/);
+        assert.equal(source, 'sms_otp_ticket');
+        nonceRecords += 1;
+        return { accepted: true };
+      };
+      nowPayments.getMinimumAmount = async () => {
+        providerCalls += 1;
+        return 1;
+      };
+      nowPayments.createPayment = async ({ referenceId }) => {
+        providerCalls += 1;
+        return {
+          paymentId: 'np_payment_1',
+          paymentAddress: 'btc-address',
+          paymentUrl: 'https://example.test/pay',
+          status: 'waiting',
+          expiresAt: '2026-06-06T00:00:00.000Z',
+          referenceId,
+        };
+      };
+      pocketBase.createPaymentIntent = async ({ referenceId }) => ({
+        id: 'intent_1',
+        reference_id: referenceId,
+      });
+      pocketBase.createAuditLog = async () => ({ id: 'audit' });
+      pocketBase.touchDeviceToken = async () => ({ id: 'dt_u1' });
+      const smsOtpTicket = createSmsOtpTicket({
+        userId: 'u1',
+        purpose: 'deposit',
+        context: canonicalMoneyOtpContext({
+          purpose: 'deposit',
+          amount: 20,
+          currency: 'usd',
+          network: 'btc',
+        }),
+        otpId: 'otp_deposit_success',
+        expiresAt: Date.now() + 60_000,
+      });
+
+      const res = makeJsonRes();
+      await createDeposit(
+        makeHttpReq({
+          method: 'POST',
+          url: '/payments/create-deposit',
+          headers: { ...headers, 'x-idempotency-key': 'dep_sms_valid_123456' },
+          body: {
+            amount: 20,
+            currency: 'usd',
+            network: 'btc',
+            sms_otp_ticket: smsOtpTicket,
+            idempotency_key: 'dep_sms_valid_123456',
+          },
+        }),
+        res,
+      );
+
+      assert.equal(res.statusCode, 201);
+      assert.equal(JSON.parse(res.body).payment.payment_id, 'np_payment_1');
+      assert.equal(nonceRecords, 1);
+      assert.equal(providerCalls, 2);
+    } finally {
+      Object.assign(pocketBase, originals);
+      nowPayments.getMinimumAmount = originals.getMinimumAmount;
+      nowPayments.createPayment = originals.createPayment;
+    }
+  });
 });
 
 describe('/users/me/update sensitive profile step-up', () => {
@@ -1305,6 +1463,90 @@ describe('/users/me/update sensitive profile step-up', () => {
   });
 });
 
+describe('Shared SMS OTP money verification', () => {
+  test('start and verify stores only a hash and returns a scoped ticket', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const {
+      canonicalMoneyOtpContext,
+      startSmsOtp,
+      verifySmsOtp,
+      verifySmsOtpTicket,
+    } = require('../src/smsOtp');
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousEcho = process.env.SMS_OTP_DEV_ECHO;
+    const previousProvider = process.env.SMS_PROVIDER;
+    const originals = {
+      adminRequest: pocketBase.adminRequest,
+      issueTwoFactorOtp: pocketBase.issueTwoFactorOtp,
+      consumeTwoFactorOtp: pocketBase.consumeTwoFactorOtp,
+      createAuditLog: pocketBase.createAuditLog,
+    };
+    let storedHash = '';
+    const context = canonicalMoneyOtpContext({
+      purpose: 'deposit',
+      amount: 20,
+      currency: 'usd',
+      network: 'btc',
+    });
+    try {
+      process.env.NODE_ENV = 'test';
+      process.env.SMS_OTP_DEV_ECHO = 'true';
+      delete process.env.SMS_PROVIDER;
+      pocketBase.adminRequest = mockRateLimitAdminRequest();
+      pocketBase.issueTwoFactorOtp = async (userId, purpose, codeHash, ttlMs, receivedContext) => {
+        assert.equal(userId, 'u_sms');
+        assert.equal(purpose, 'deposit');
+        assert.equal(receivedContext, context);
+        assert.ok(ttlMs <= 5 * 60 * 1000);
+        storedHash = codeHash;
+        return { id: 'otp_sms_1', expires_at: '2026-06-06T00:00:00.000Z' };
+      };
+      pocketBase.consumeTwoFactorOtp = async (userId, purpose, codeHash, receivedContext) => {
+        assert.equal(userId, 'u_sms');
+        assert.equal(purpose, 'deposit');
+        assert.equal(receivedContext, context);
+        assert.equal(codeHash, storedHash);
+        return { ok: true, record: { id: 'otp_sms_1' } };
+      };
+      pocketBase.createAuditLog = async () => ({ id: 'audit' });
+
+      const started = await startSmsOtp({
+        user: { id: 'u_sms', phone: '+905551112233' },
+        purpose: 'deposit',
+        context,
+        requestContext: {},
+      });
+      assert.match(started.dev_otp, /^\d{6}$/);
+      assert.notEqual(storedHash, started.dev_otp);
+      assert.match(storedHash, /^[a-f0-9]{64}$/);
+
+      const verified = await verifySmsOtp({
+        user: { id: 'u_sms' },
+        purpose: 'deposit',
+        context,
+        code: started.dev_otp,
+        requestContext: {},
+      });
+      assert.ok(verified.sms_otp_ticket);
+      assert.ok(
+        verifySmsOtpTicket(verified.sms_otp_ticket, {
+          userId: 'u_sms',
+          purpose: 'deposit',
+          context,
+        }),
+      );
+    } finally {
+      Object.assign(pocketBase, originals);
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousEcho === undefined) delete process.env.SMS_OTP_DEV_ECHO;
+      else process.env.SMS_OTP_DEV_ECHO = previousEcho;
+      if (previousProvider === undefined) delete process.env.SMS_PROVIDER;
+      else process.env.SMS_PROVIDER = previousProvider;
+    }
+  });
+});
+
 function requireFreshRoute() {
   delete require.cache[require.resolve('../src/routes/payments')];
   return require('../src/routes/payments');
@@ -1316,7 +1558,7 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
     assert.equal(typeof startTransferTwoFactorChallenge, 'function');
   });
 
-  test('sendTransfer source gates on isTwoFactorRequiredForTransfer', () => {
+  test('sendTransfer source gates on shared SMS OTP before money movement', () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const source = fs.readFileSync(
@@ -1324,12 +1566,9 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
       'utf8',
     );
     assert.match(source, /isTwoFactorRequiredForTransfer/);
-    assert.match(source, /two_factor_ticket/);
-    assert.match(source, /firebase_pnv_token/);
-    assert.match(source, /verifyTransferChallengeTicket/);
-    assert.match(source, /verifyFirebasePnvToken/);
-    assert.match(source, /phoneNumbersMatch/);
-    assert.match(source, /two_factor_required/);
+    assert.match(source, /sms_otp_ticket/);
+    assert.match(source, /verifyAndConsumeSmsOtpTicket/);
+    assert.match(source, /sms_otp_required/);
   });
 
   test('verifyTransferChallengeTicket rejects tampered payload', () => {
@@ -1382,25 +1621,38 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
     }
   });
 
-  test('challenge returns Firebase PNV method and never echoes a local OTP', async () => {
+  test('legacy transfer challenge endpoint starts shared SMS OTP', async () => {
     const { pocketBase } = require('../src/pocketbase');
     const { startTransferTwoFactorChallenge } = require('../src/routes/transfers');
     const originals = {
+      adminRequest: pocketBase.adminRequest,
       authenticateBearer: pocketBase.authenticateBearer,
       getUserById: pocketBase.getUserById,
       getTwoFactorSettings: pocketBase.getTwoFactorSettings,
+      issueTwoFactorOtp: pocketBase.issueTwoFactorOtp,
       createAuditLog: pocketBase.createAuditLog,
     };
     const previousNodeEnv = process.env.NODE_ENV;
-    const previousAllow = process.env.ALLOW_DEV_OTP_ECHO;
+    const previousEcho = process.env.SMS_OTP_DEV_ECHO;
+    const previousProvider = process.env.SMS_PROVIDER;
     try {
-      pocketBase.authenticateBearer = async () => ({ id: 'sender' });
+      process.env.NODE_ENV = 'test';
+      process.env.SMS_OTP_DEV_ECHO = 'true';
+      delete process.env.SMS_PROVIDER;
+      pocketBase.adminRequest = mockRateLimitAdminRequest();
+      pocketBase.authenticateBearer = async () => ({ id: 'sender', phone: '+905551112233' });
       pocketBase.getUserById = async () => ({ id: 'receiver' });
       pocketBase.getTwoFactorSettings = async () => ({ enabled: true, transfer_required: true });
+      pocketBase.issueTwoFactorOtp = async (userId, purpose, codeHash, ttlMs, context) => {
+        assert.equal(userId, 'sender');
+        assert.equal(purpose, 'transfer');
+        assert.match(codeHash, /^[a-f0-9]{64}$/);
+        assert.ok(ttlMs <= 5 * 60 * 1000);
+        assert.equal(context, 'transfer:10:USD:receiver');
+        return { id: 'otp_legacy_transfer', expires_at: '2026-06-06T00:00:00.000Z' };
+      };
       pocketBase.createAuditLog = async () => ({ id: 'audit' });
 
-      delete process.env.NODE_ENV;
-      process.env.ALLOW_DEV_OTP_ECHO = 'true';
       const resDefault = makeJsonRes();
       await startTransferTwoFactorChallenge(
         makeHttpReq({
@@ -1412,30 +1664,16 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
         resDefault,
       );
       const defaultBody = JSON.parse(resDefault.body);
-      assert.equal(defaultBody.two_factor_method, 'firebase_pnv');
-      assert.equal(defaultBody.dev_otp, undefined);
-
-      process.env.NODE_ENV = 'development';
-      process.env.ALLOW_DEV_OTP_ECHO = 'true';
-      const resDev = makeJsonRes();
-      await startTransferTwoFactorChallenge(
-        makeHttpReq({
-          method: 'POST',
-          url: '/transfers/two-factor/challenge',
-          headers: { authorization: 'Bearer token' },
-          body: { receiver_user_id: 'receiver', amount: 10, currency: 'USD' },
-        }),
-        resDev,
-      );
-      const devBody = JSON.parse(resDev.body);
-      assert.equal(devBody.two_factor_method, 'firebase_pnv');
-      assert.equal(devBody.dev_otp, undefined);
+      assert.equal(defaultBody.two_factor_method, 'sms_otp');
+      assert.match(defaultBody.dev_otp, /^\d{6}$/);
     } finally {
       Object.assign(pocketBase, originals);
       if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = previousNodeEnv;
-      if (previousAllow === undefined) delete process.env.ALLOW_DEV_OTP_ECHO;
-      else process.env.ALLOW_DEV_OTP_ECHO = previousAllow;
+      if (previousEcho === undefined) delete process.env.SMS_OTP_DEV_ECHO;
+      else process.env.SMS_OTP_DEV_ECHO = previousEcho;
+      if (previousProvider === undefined) delete process.env.SMS_PROVIDER;
+      else process.env.SMS_PROVIDER = previousProvider;
     }
   });
 
@@ -1456,7 +1694,7 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
     );
   });
 
-  test('sendTransfer rejects a real request when Firebase PNV token is missing', async () => {
+  test('sendTransfer rejects a real request when SMS OTP ticket is missing', async () => {
     const { pocketBase } = require('../src/pocketbase');
     const { sendTransfer } = require('../src/routes/transfers');
     const { headers, tokenHash } = makeDeviceAuthHeaders('sender', 'transfer-bearer');
@@ -1510,7 +1748,7 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
           }),
           makeJsonRes(),
         ),
-        (error) => error.details?.code === 'two_factor_required',
+        (error) => error.details?.code === 'sms_otp_required',
       );
       assert.equal(appliedTransfer, false);
     } finally {
@@ -1518,32 +1756,10 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
     }
   });
 
-  test('sendTransfer completes with a valid challenge ticket and Firebase PNV token', async () => {
+  test('sendTransfer completes with a valid shared SMS OTP ticket', async () => {
     const { pocketBase } = require('../src/pocketbase');
-    const {
-      sendTransfer,
-      startTransferTwoFactorChallenge,
-    } = require('../src/routes/transfers');
-    const { __setJwksForTests } = require('../src/firebasePnv');
-    const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', {
-      namedCurve: 'prime256v1',
-    });
-    const jwk = publicKey.export({ format: 'jwk' });
-    jwk.kid = 'transfer-pnv-key';
-    jwk.alg = 'ES256';
-    jwk.use = 'sig';
-    __setJwksForTests([jwk]);
-    const firebasePnvToken = signEs256Jwt(
-      { typ: 'JWT', alg: 'ES256', kid: jwk.kid },
-      {
-        iss: 'https://fpnv.googleapis.com/projects/123456789',
-        aud: 'https://fpnv.googleapis.com/projects/123456789',
-        sub: '+905551112233',
-        iat: Math.floor(Date.now() / 1000),
-        exp: Math.floor(Date.now() / 1000) + 300,
-      },
-      privateKey,
-    );
+    const { sendTransfer } = require('../src/routes/transfers');
+    const { canonicalMoneyOtpContext, createSmsOtpTicket } = require('../src/smsOtp');
 
     const { headers, tokenHash } = makeDeviceAuthHeaders('sender', 'transfer-bearer');
     const originals = {
@@ -1558,6 +1774,7 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
       applyInternalTransferWithLock: pocketBase.applyInternalTransferWithLock,
       touchDeviceToken: pocketBase.touchDeviceToken,
       createAuditLog: pocketBase.createAuditLog,
+      recordWebhookNonce: pocketBase.recordWebhookNonce,
     };
     try {
       pocketBase.adminRequest = mockRateLimitAdminRequest();
@@ -1590,40 +1807,45 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
       });
       pocketBase.touchDeviceToken = async () => ({ id: 'dt_sender' });
       pocketBase.createAuditLog = async () => ({ id: 'audit' });
-
-      const challengeRes = makeJsonRes();
-      await startTransferTwoFactorChallenge(
-        makeHttpReq({
-          method: 'POST',
-          url: '/transfers/two-factor/challenge',
-          headers: { authorization: 'Bearer transfer-bearer' },
-          body: { receiver_user_id: 'receiver', amount: 10, currency: 'USD' },
+      let nonceRecords = 0;
+      pocketBase.recordWebhookNonce = async (nonce, source) => {
+        assert.match(nonce, /^sms_otp_ticket:/);
+        assert.equal(source, 'sms_otp_ticket');
+        nonceRecords += 1;
+        return { accepted: true };
+      };
+      const smsOtpTicket = createSmsOtpTicket({
+        userId: 'sender',
+        purpose: 'transfer',
+        context: canonicalMoneyOtpContext({
+          purpose: 'transfer',
+          amount: 10,
+          currency: 'USD',
+          receiverUserId: 'receiver',
         }),
-        challengeRes,
-      );
-      const challenge = JSON.parse(challengeRes.body);
-      assert.equal(challenge.two_factor_method, 'firebase_pnv');
-      assert.ok(challenge.ticket);
+        otpId: 'otp_transfer_success',
+        expiresAt: Date.now() + 60_000,
+      });
 
       const sendRes = makeJsonRes();
       await sendTransfer(
         makeHttpReq({
           method: 'POST',
           url: '/transfers/send',
-          headers: { ...headers, 'x-idempotency-key': 'tr_valid_pnv_123456' },
+          headers: { ...headers, 'x-idempotency-key': 'tr_valid_sms_123456' },
           body: {
             receiver_user_id: 'receiver',
             amount: 10,
             currency: 'USD',
             pin: '1234',
-            two_factor_ticket: challenge.ticket,
-            firebase_pnv_token: firebasePnvToken,
+            sms_otp_ticket: smsOtpTicket,
           },
         }),
         sendRes,
       );
       assert.equal(sendRes.statusCode, 201);
       assert.equal(JSON.parse(sendRes.body).transaction.id, 'tx_pnv_success');
+      assert.equal(nonceRecords, 1);
     } finally {
       Object.assign(pocketBase, originals);
     }

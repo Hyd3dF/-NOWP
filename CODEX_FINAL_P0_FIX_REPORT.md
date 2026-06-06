@@ -1,5 +1,66 @@
 # CODEX_FINAL_P0_FIX_REPORT.md
 
+## SMS OTP Money Flow Update - 2026-06-06
+
+Secret, sifre, token veya local `.env` degerleri yazilmadi.
+
+### Duzeltilen maddeler
+
+- Deposit akisi artik SMS OTP dogrulamasi olmadan `/payments/create-deposit` uzerinden deposit adresi olusturmuyor.
+- Transfer akisi artik SMS OTP dogrulamasi olmadan `/transfers/send` uzerinden para hareketi baslatmiyor.
+- Ortak backend OTP servisi eklendi: tek kullanimlik, kisa sureli, amaca ve islem detayina bagli, HMAC imzali ticket uretir.
+- OTP kodlari PocketBase `two_factor_otps` koleksiyonunda duz metin degil HMAC hash olarak saklanir.
+- Yanlis kod denemeleri PocketBase helper uzerinden sayilir ve limit asiminda kilitlenir.
+- OTP baslatma endpointi kullanici bazli rate limit uygular.
+- SMS provider production'da yoksa sistem fail-closed davranir ve para islemi baslamaz.
+- Eski transfer challenge endpointi Firebase PNV bileti yerine ortak SMS OTP baslatacak sekilde guncellendi.
+- Frontend deposit ve transfer ekranlari SMS kod modalina baglandi.
+
+### Degistirilen dosyalar
+
+- `backend/src/smsOtp.js`
+- `backend/src/routes/smsOtp.js`
+- `backend/src/routes/payments.js`
+- `backend/src/routes/transfers.js`
+- `backend/src/pocketbase.js`
+- `backend/src/server.js`
+- `backend/package.json`
+- `backend/test/security.test.js`
+- `services/api/smsOtp.ts`
+- `services/api/transfers.ts`
+- `app/deposit/index.tsx`
+- `app/send/confirm.tsx`
+- `CODEX_FINAL_P0_FIX_REPORT.md`
+
+### Eklenen testler
+
+- Deposit request valid device token ile gelse bile SMS OTP ticket yoksa provider cagrilmadan reddediliyor.
+- Deposit request gecerli SMS OTP ticket ile provider/adres olusturma asamasina geciyor.
+- SMS OTP start/verify akisi kodu hash olarak sakliyor ve scoped ticket uretiyor.
+- Legacy transfer challenge endpointi ortak SMS OTP baslatiyor.
+- Transfer request SMS OTP ticket yoksa para hareketi yapmadan reddediliyor.
+- Transfer request gecerli SMS OTP ticket ile tamamlanabiliyor.
+
+### Test sonuclari
+
+- `npm run check --prefix backend`: PASS
+- `npm test --prefix backend`: PASS, 94/94
+- `npx tsc --noEmit`: PASS
+- `npm run schema:sync --prefix backend`: PASS. Veri silinmedi/drop yapilmadi. `device_security.idx_device_security_week` optional index'i yine skipped.
+
+### Kalan gercek riskler
+
+- Production'da gercek SMS icin `SMS_PROVIDER=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` set edilmeli. Bu degerler yoksa sistem bilincli olarak para islemlerini baslatmaz.
+- Lokal gelistirmede `SMS_OTP_DEV_ECHO=true` kullanilabilir; production'da OTP kodu response'a echo edilmez.
+- Kullanici telefon numaralari E.164 formatinda olmalidir; ornek olarak ulke kodu ile baslamalidir.
+- Twilio disinda baska SMS saglayici istenirse `sendSms` provider katmanina yeni adapter eklenmeli.
+
+### Karar
+
+YELLOW.
+
+Kod tarafinda deposit ve transfer SMS OTP olmadan fail-closed hale getirildi. Production'a cikmadan once zorunlu kalan adim gercek SMS provider env degerlerinin deploy ortaminda set edilmesi ve canli cihazla SMS teslim testidir.
+
 Tarih: 2026-06-05
 
 Bu rapor `MINIMAX_FINAL_20_AGENT_SECURITY_AUDIT.md` icindeki 1. ve 2. maddeler haric tutularak yapilan P0 kontrol ve duzeltmeleri ozetler. Secret, sifre, token veya local `.env` degerleri bu rapora yazilmadi.

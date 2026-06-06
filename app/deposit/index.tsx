@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -19,6 +20,7 @@ import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Button } from '@/components/ui/Button';
 import { CoinLogo } from '@/components/ui/CoinLogo';
 import { ApiError, api, createIdempotencyKey } from '@/services/api/client';
+import { startMoneySmsOtp, verifyMoneySmsOtp } from '@/services/api/smsOtp';
 import { isValidAmount } from '@/utils/validation';
 import {
   FALLBACK_CURRENCIES,
@@ -43,6 +45,9 @@ export default function DepositScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [isCurrenciesLoading, setIsCurrenciesLoading] = useState(false);
   const [error, setError] = useState('');
+  const [otpVisible, setOtpVisible] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpHint, setOtpHint] = useState('');
 
   useEffect(() => {
     let isMounted = true;
@@ -74,6 +79,26 @@ export default function DepositScreen() {
     [selectedCoinId, currencies],
   );
 
+  const getDepositRequest = () => ({
+    amount: Number(amount),
+    currency: 'usd',
+    network: (selectedCoinObj.code || selectedCoinObj.id).toLowerCase(),
+  });
+
+  const submitDeposit = async (smsOtpTicket: string) => {
+    const request = getDepositRequest();
+    const idempotencyKey = createIdempotencyKey('dep');
+    const response = await api.post<DepositResponse>('/payments/create-deposit', {
+      ...request,
+      sms_otp_ticket: smsOtpTicket,
+      idempotency_key: idempotencyKey,
+    }, {
+      'X-Idempotency-Key': idempotencyKey,
+    });
+    setPayment(response.payment);
+    router.push('/deposit/result');
+  };
+
   const createDeposit = async () => {
     setError('');
     setPayment(null);
@@ -85,23 +110,43 @@ export default function DepositScreen() {
 
     setIsLoading(true);
     try {
-      const idempotencyKey = createIdempotencyKey('dep');
-      const response = await api.post<DepositResponse>('/payments/create-deposit', {
-        amount: Number(amount),
-        currency: 'usd',
-        network: (selectedCoinObj.code || selectedCoinObj.id).toLowerCase(),
-        idempotency_key: idempotencyKey,
-      }, {
-        'X-Idempotency-Key': idempotencyKey,
+      const started = await startMoneySmsOtp({
+        purpose: 'deposit',
+        ...getDepositRequest(),
       });
-      setPayment(response.payment);
-      router.push('/deposit/result');
+      setOtpHint(started.dev_otp ? `Dev code: ${started.dev_otp}` : 'Enter the SMS code sent to your phone.');
+      setOtpCode('');
+      setOtpVisible(true);
     } catch (error) {
       const message = error instanceof ApiError ? getDepositErrorMessage(error.code) : '';
       const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
       setError(
         `${message || 'Deposit address could not be created right now. Please try again in a moment.'}${requestId}`,
       );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const verifyOtpAndCreateDeposit = async () => {
+    if (!/^\d{6}$/.test(otpCode.trim())) {
+      setError('Enter the 6-digit SMS verification code.');
+      return;
+    }
+    setIsLoading(true);
+    setError('');
+    try {
+      const verified = await verifyMoneySmsOtp({
+        purpose: 'deposit',
+        ...getDepositRequest(),
+        code: otpCode.trim(),
+      });
+      setOtpVisible(false);
+      await submitDeposit(verified.sms_otp_ticket);
+    } catch (error) {
+      const message = error instanceof ApiError ? getDepositErrorMessage(error.code) : '';
+      const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
+      setError(`${message || 'SMS verification failed. Please try again.'}${requestId}`);
     } finally {
       setIsLoading(false);
     }
@@ -186,6 +231,35 @@ export default function DepositScreen() {
           ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={otpVisible}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setOtpVisible(false)}
+      >
+        <View style={styles.container}>
+          <HeaderBar title="Verify Deposit" showBack onBack={() => setOtpVisible(false)} />
+          <View style={styles.otpContent}>
+            <Text style={styles.otpTitle}>SMS Verification</Text>
+            <Text style={styles.otpSubtitle}>{otpHint}</Text>
+            <TextInput
+              value={otpCode}
+              onChangeText={(value) => setOtpCode(value.replace(/[^0-9]/g, '').slice(0, 6))}
+              keyboardType="number-pad"
+              maxLength={6}
+              style={styles.otpInput}
+              textAlign="center"
+            />
+            <Button
+              title="Verify & Create Address"
+              onPress={verifyOtpAndCreateDeposit}
+              loading={isLoading}
+              fullWidth
+            />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -306,6 +380,33 @@ const styles = StyleSheet.create({
     ...typography.bodySm,
     color: colors.light.textSecondary,
   },
+  otpContent: {
+    flex: 1,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing['3xl'],
+    gap: spacing.lg,
+  },
+  otpTitle: {
+    ...typography.h2,
+    color: colors.light.textPrimary,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  otpSubtitle: {
+    ...typography.bodySm,
+    color: colors.light.textSecondary,
+    lineHeight: 20,
+    textAlign: 'center',
+  },
+  otpInput: {
+    borderBottomWidth: 1.5,
+    borderBottomColor: colors.light.border,
+    color: colors.light.textPrimary,
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: 0,
+    paddingVertical: spacing.md,
+  },
 });
 
 function getDepositErrorMessage(code: string) {
@@ -328,6 +429,17 @@ function getDepositErrorMessage(code: string) {
       return 'Check the amount and selected network, then try again.';
     case 'minimum_deposit_amount':
       return 'This amount is below the minimum for the selected crypto. Increase the amount and try again.';
+    case 'sms_phone_missing':
+      return 'Add a phone number before creating a deposit address.';
+    case 'sms_phone_invalid':
+      return 'Your phone number must include the country code before SMS verification can be used.';
+    case 'sms_provider_not_configured':
+      return 'SMS verification is not configured yet. Please contact support.';
+    case 'sms_otp_required':
+    case 'sms_otp_invalid':
+    case 'sms_otp_locked':
+    case 'sms_otp_ticket_used':
+      return 'SMS verification failed. Request a new code and try again.';
     case 'deposit_currency_unavailable':
       return 'This crypto/network is not available for deposit right now. Please choose another coin.';
     case 'deposit_provider_unavailable':
