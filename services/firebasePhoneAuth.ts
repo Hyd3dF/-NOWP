@@ -85,7 +85,7 @@ function assertFirebaseNativeAvailable() {
   if (!NativeModules.RNFBAppModule || !NativeModules.RNFBAuthModule) {
     throw new FirebasePhoneAuthError(
       'firebase_auth_native_module_missing',
-      'Phone verification requires an installed app build.',
+      'Phone verification is not available in this test build.',
     );
   }
 }
@@ -99,7 +99,7 @@ function getFirebaseAuth(): () => { signInWithPhoneNumber: (phoneNumber: string)
   if (typeof authModule.default === 'function') return authModule.default;
   throw new FirebasePhoneAuthError(
     'firebase_auth_native_module_missing',
-    'Phone verification is unavailable in this app build.',
+    'Phone verification is not available in this test build.',
   );
 }
 
