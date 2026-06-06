@@ -854,10 +854,36 @@ describe('HTTP layer: parseRawJsonBody preserves exact bytes', () => {
     assert.deepEqual(body, {});
   });
 
-  test('oversize body is rejected with 413', async () => {
+  test('oversize body is rejected with a public 413 code', async () => {
     const huge = Buffer.alloc(8 * 1024 * 1024 + 1, 'a');
     const req = makeReq(huge);
-    await assert.rejects(parseRawJsonBody(req), (err) => err.status === 413);
+    await assert.rejects(
+      parseRawJsonBody(req),
+      (err) => err.status === 413 && err.details?.code === 'request_body_too_large',
+    );
+  });
+});
+
+describe('Server health endpoint', () => {
+  test('GET / and HEAD / return health without logging a 404 path miss', async () => {
+    const { handleRequest } = require('../src/server');
+    const { pocketBase } = require('../src/pocketbase');
+    const originalAdminRequest = pocketBase.adminRequest;
+    try {
+      pocketBase.adminRequest = mockRateLimitAdminRequest();
+
+      const getRes = makeJsonRes();
+      await handleRequest(makeHttpReq({ method: 'GET', url: '/' }), getRes);
+      assert.equal(getRes.statusCode, 200);
+      assert.equal(JSON.parse(getRes.body).status, 'ok');
+
+      const headRes = makeJsonRes();
+      await handleRequest(makeHttpReq({ method: 'HEAD', url: '/' }), headRes);
+      assert.equal(headRes.statusCode, 200);
+      assert.equal(headRes.body, '');
+    } finally {
+      pocketBase.adminRequest = originalAdminRequest;
+    }
   });
 });
 

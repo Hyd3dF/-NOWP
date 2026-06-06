@@ -94,6 +94,7 @@ const PHONE_COUNTRIES = [
 ];
 
 const TOTAL_STEPS = 4;
+const MAX_PROFILE_PHOTO_BASE64_CHARS = 5_500_000;
 
 const STEP_META = [
   { icon: 'person-outline' as const, title: 'Personal Info', subtitle: 'Tell us about yourself' },
@@ -115,6 +116,9 @@ function getSignupErrorMessage(error: any) {
   const code = String(error?.code || error?.message || '');
   if (code === 'connection_failed') {
     return 'We could not connect right now. Please check your connection and try again.';
+  }
+  if (code === 'request_body_too_large') {
+    return 'Your profile photo is too large. Please choose a smaller photo or continue without one.';
   }
   if (code === 'account_conflict') {
     return 'An account with these details may already exist. Please review your email, username, or phone number.';
@@ -213,13 +217,17 @@ export default function SignupScreen() {
       mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.45,
+      quality: 0.3,
       base64: true,
     });
 
     if (result.canceled || !result.assets[0]) return;
 
     const asset = result.assets[0];
+    if (asset.base64 && asset.base64.length > MAX_PROFILE_PHOTO_BASE64_CHARS) {
+      setGeneralError('This profile photo is too large. Please choose a smaller photo or continue without one.');
+      return;
+    }
     setProfilePhoto({
       uri: asset.uri,
       base64: asset.base64 || undefined,

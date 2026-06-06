@@ -43,7 +43,9 @@ function parseJsonBody(req) {
       if (byteLength > MAX_BODY_BYTES) {
         rejected = true;
         req.destroy();
-        reject(new HttpError(413, 'Request body is too large.'));
+        reject(new HttpError(413, 'Request body is too large.', {
+          code: 'request_body_too_large',
+        }));
       }
     });
 
@@ -78,7 +80,9 @@ function parseRawJsonBody(req) {
       if (byteLength > MAX_BODY_BYTES) {
         rejected = true;
         req.destroy();
-        reject(new HttpError(413, 'Request body is too large.'));
+        reject(new HttpError(413, 'Request body is too large.', {
+          code: 'request_body_too_large',
+        }));
       }
     });
 

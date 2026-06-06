@@ -190,7 +190,14 @@ async function handleRequest(req, res) {
     return;
   }
 
-  if (req.method === 'GET' && url.pathname === '/health') {
+  if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname === '/health' || url.pathname === '/')) {
+    if (req.method === 'HEAD') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+      });
+      res.end();
+      return;
+    }
     sendJson(res, 200, {
       success: true,
       status: 'ok',
