@@ -144,11 +144,12 @@ class OroyaApiClient {
       const errorCode = getErrorCode(response.status, data);
       if (
         !options.skipAuth &&
-        isSessionAuthFailure(response.status, errorCode) &&
-        errorCode !== 'device_token_required' &&
-        errorCode !== 'device_token_invalid' &&
-        errorCode !== 'device_token_revoked'
+        (isSessionAuthFailure(response.status, errorCode) ||
+          isDeviceSessionFailure(response.status, errorCode))
       ) {
+        if (isDeviceSessionFailure(response.status, errorCode)) {
+          await setDeviceToken(null);
+        }
         await notifyUnauthorized();
       }
       if (
@@ -160,7 +161,7 @@ class OroyaApiClient {
       throw new ApiError(errorCode, response.status, getRequestId(data));
     }
 
-    captureDeviceToken(data);
+    await captureDeviceToken(data);
     return data as T;
   }
 
@@ -197,11 +198,11 @@ function parseJsonResponse(text: string) {
   }
 }
 
-function captureDeviceToken(data: unknown) {
+async function captureDeviceToken(data: unknown) {
   if (!data || typeof data !== 'object') return;
   const token = (data as { device_token?: unknown }).device_token;
   if (typeof token === 'string' && token.length > 0) {
-    void setDeviceToken(token);
+    await setDeviceToken(token);
   }
 }
 
@@ -298,6 +299,16 @@ function getRandomId() {
   }
 
   throw new Error('Secure random generator is unavailable.');
+}
+
+function isDeviceSessionFailure(status: number, errorCode: string) {
+  if (status !== 401) return false;
+  return (
+    errorCode === 'device_token_required' ||
+    errorCode === 'device_token_invalid' ||
+    errorCode === 'device_token_revoked' ||
+    errorCode === 'device_token_mismatch'
+  );
 }
 
 export function createIdempotencyKey(prefix = 'req') {
