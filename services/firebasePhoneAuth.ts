@@ -63,8 +63,8 @@ export async function confirmFirebasePhoneOtp(code: string) {
     pendingConfirmation = null;
     if (!idToken) {
       throw new FirebasePhoneAuthError(
-        'firebase_auth_token_missing',
-        'Firebase did not return a verified token.',
+      'firebase_auth_token_missing',
+        'Phone verification did not return a verified token.',
       );
     }
     return {
@@ -81,7 +81,7 @@ function assertFirebaseNativeAvailable() {
   if (!NativeModules.RNFBAppModule || !NativeModules.RNFBAuthModule) {
     throw new FirebasePhoneAuthError(
       'firebase_auth_native_module_missing',
-      'Firebase Phone Auth requires an Expo development build or production build.',
+      'Phone verification requires an installed app build.',
     );
   }
 }
@@ -95,7 +95,7 @@ function getFirebaseAuth(): () => { signInWithPhoneNumber: (phoneNumber: string)
   if (typeof authModule.default === 'function') return authModule.default;
   throw new FirebasePhoneAuthError(
     'firebase_auth_native_module_missing',
-    'Firebase Phone Auth native module is unavailable.',
+    'Phone verification is unavailable in this app build.',
   );
 }
 
@@ -108,7 +108,7 @@ function mapFirebasePhoneAuthError(error: unknown) {
   const mapped = code || 'firebase_auth_failed';
   const messages: Record<string, string> = {
     firebase_auth_invalid_phone_number: 'Phone number is invalid.',
-    firebase_auth_quota_exceeded: 'Firebase SMS quota has been reached. Try again later.',
+    firebase_auth_quota_exceeded: 'SMS verification limit has been reached. Try again later.',
     firebase_auth_too_many_requests: 'Too many SMS attempts. Try again later.',
     firebase_auth_invalid_verification_code: 'The SMS code is incorrect.',
     firebase_auth_session_expired: 'The SMS code expired. Request a new code.',
@@ -116,6 +116,6 @@ function mapFirebasePhoneAuthError(error: unknown) {
   };
   return new FirebasePhoneAuthError(
     mapped,
-    messages[mapped] || 'Firebase phone verification failed.',
+    messages[mapped] || 'Phone verification failed.',
   );
 }

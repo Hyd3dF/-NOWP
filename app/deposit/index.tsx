@@ -458,12 +458,12 @@ function getDepositErrorMessage(code: string) {
     case 'sms_provider_not_configured':
       return 'SMS verification is not configured yet. Please contact support.';
     case 'firebase_auth_not_configured':
-      return 'Firebase phone verification is not configured yet. Please contact support.';
+      return 'Phone verification is not configured yet. Please contact support.';
     case 'firebase_auth_native_module_missing':
-      return 'Firebase phone verification requires a development or production app build.';
+      return 'Phone verification is not available in this app build. Please install the latest app build.';
     case 'firebase_auth_quota_exceeded':
     case 'firebase_auth_too_many_requests':
-      return 'Firebase SMS limit has been reached. Please try again later.';
+      return 'SMS verification limit has been reached. Please try again later.';
     case 'firebase_auth_invalid_phone_number':
     case 'firebase_auth_phone_invalid':
       return 'Your phone number must include the country code before SMS verification can be used.';
