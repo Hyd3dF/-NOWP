@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
+import * as Crypto from 'expo-crypto';
 
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
@@ -272,7 +273,7 @@ async function getOrCreateDeviceId() {
     const existing = await SecureStore.getItemAsync(DEVICE_ID_KEY);
     if (existing) return existing;
 
-    const random = getRandomId();
+    const random = await getRandomIdAsync();
     const deviceId = `device_${random}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
     await SecureStore.setItemAsync(DEVICE_ID_KEY, deviceId, SECURE_STORE_OPTIONS);
     return deviceId;
@@ -303,6 +304,10 @@ export async function setDeviceToken(token: string | null) {
 }
 
 function getRandomId() {
+  if (Crypto.randomUUID) {
+    return Crypto.randomUUID();
+  }
+
   const cryptoApi = globalThis.crypto;
   if (cryptoApi?.randomUUID) {
     return cryptoApi.randomUUID();
@@ -315,6 +320,15 @@ function getRandomId() {
   }
 
   throw new Error('Secure random generator is unavailable.');
+}
+
+async function getRandomIdAsync() {
+  try {
+    return getRandomId();
+  } catch {
+    const bytes = await Crypto.getRandomBytesAsync(16);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
 }
 
 function isDeviceSessionFailure(status: number, errorCode: string) {
