@@ -51,7 +51,7 @@ Secret, sifre, token veya local `.env` degerleri yazilmadi.
 ### Kalan gercek riskler
 
 - Production'da gercek SMS icin `SMS_PROVIDER=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` set edilmeli. Bu degerler yoksa sistem bilincli olarak para islemlerini baslatmaz.
-- Lokal gelistirmede `SMS_OTP_DEV_ECHO=true` kullanilabilir; production'da OTP kodu response'a echo edilmez.
+- `SMS_OTP_DEV_ECHO=false` gercek kullanim icin zorunludur. Test echo sadece izole lokal testlerde acilabilir; uygulama UI'i dev/test kodunu kullaniciya gostermez.
 - Kullanici telefon numaralari E.164 formatinda olmalidir; ornek olarak ulke kodu ile baslamalidir.
 - Twilio disinda baska SMS saglayici istenirse `sendSms` provider katmanina yeni adapter eklenmeli.
 

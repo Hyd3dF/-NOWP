@@ -16,17 +16,17 @@
 - Restore test cadence: at least once per month, restore the latest backup into an isolated PocketBase instance and run `npm run schema:sync --prefix backend` against it.
 - Never test restores against production. Never use collection drop/delete as part of routine schema sync.
 
-## Firebase PNV Android build
+## SMS OTP for money flows
 
-- Firebase PNV is Android-only and requires a custom Android development/production build. It will not work in Expo Go because Expo Go cannot include the native PNV SDK module.
-- Required local build inputs:
-  - `google-services.json` at the project root. This file is intentionally ignored by git.
-  - `EXPO_PUBLIC_FIREBASE_PNV_PRIVACY_POLICY_URL=https://...`
-  - Backend `FIREBASE_PNV_PROJECT_NUMBER` and `FIREBASE_PNV_PROJECT_ID`.
-- Run `npx expo prebuild --platform android` or an EAS Android build so `./plugins/withFirebasePnv` can inject:
-  - `com.google.firebase:firebase-pnv:16.0.0-beta01`
-  - `FirebasePhoneNumberVerification` React Native native module
-- Transfer submission must continue to fail closed when Firebase PNV is unavailable or when the backend rejects the signed PNV token.
+- Deposit and transfer must use the shared SMS OTP flow before any money operation starts.
+- Production must use a real SMS provider. Set:
+  - `SMS_PROVIDER=twilio`
+  - `TWILIO_ACCOUNT_SID`
+  - `TWILIO_AUTH_TOKEN`
+  - `TWILIO_FROM_NUMBER`
+- Keep `SMS_OTP_DEV_ECHO=false` in production and in real device testing. If it is enabled for isolated local tests, never expose that build to users.
+- Users must have phone numbers in international E.164 format, for example `+905551112233`.
+- If the SMS provider is missing or rejects the message, the backend intentionally fails closed and deposit/transfer must not continue.
 
 ## NOWPayments IPN ingress
 

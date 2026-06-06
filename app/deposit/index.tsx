@@ -114,7 +114,7 @@ export default function DepositScreen() {
         purpose: 'deposit',
         ...getDepositRequest(),
       });
-      setOtpHint(started.dev_otp ? `Dev code: ${started.dev_otp}` : 'Enter the SMS code sent to your phone.');
+      setOtpHint('Enter the SMS code sent to your phone.');
       setOtpCode('');
       setOtpVisible(true);
     } catch (error) {

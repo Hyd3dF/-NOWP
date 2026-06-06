@@ -98,7 +98,7 @@ export default function SendConfirmScreen() {
       setPendingPin(pin);
       setPendingIdempotencyKey(idempotencyKey);
       setSmsOtpCode('');
-      setSmsOtpHint(started.dev_otp ? `Dev code: ${started.dev_otp}` : 'Enter the SMS code sent to your phone.');
+      setSmsOtpHint('Enter the SMS code sent to your phone.');
       setTwoFactorVisible(true);
     } catch (error) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});

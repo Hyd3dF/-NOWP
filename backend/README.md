@@ -42,7 +42,7 @@ called out in `SECURITY_AUDIT_PLAN.md`:
 | Finding | Defence |
 |---------|---------|
 | YA-1    | `searchUsersForFriend` no longer matches on `email`. It only matches `username` (case-insensitive prefix via `lower(username) ~`) or an exact `payment_tag`. |
-| YA-3/YP-8 | Transfers that require step-up verification (amount > `TRANSFER_2FA_THRESHOLD` or `user.two_factor_transfer_required`) require an HMAC-signed `two_factor_ticket` plus a Firebase Phone Number Verification JWT in `firebase_pnv_token`. The backend verifies the Google ES256 signature, issuer, audience, expiry, and that the verified phone number matches the sender account. |
+| YA-3/YP-8 | Deposit and transfer money flows require shared SMS OTP verification before the money operation starts. OTP codes are short-lived, single-use, rate-limited, stored only as HMAC hashes, and exchanged for a scoped `sms_otp_ticket`. Production requires a real SMS provider such as Twilio. |
 | YP-1    | Webhook replays are blocked. Each webhook carries a 5-minute timestamp window (`NOWPAYMENTS_IPN_MAX_AGE_SECONDS`) and a server-issued nonce persisted in `webhook_nonces` (24h TTL). Replays return `409 webhook_replay_detected`. |
 | YP-2    | The webhook source is gated by `isWebhookSourceAllowed`. By default only private-network IPs are accepted; an explicit allowlist can be set via `NOWPAYMENTS_IPN_ALLOWED_IPS`. |
 | YP-5    | Production refuses to start if `OROYA_LEDGER_ALLOW_UNSIGNED=true`, the IPN secret is weak, or the admin token is short. |
@@ -71,10 +71,12 @@ called out in `SECURITY_AUDIT_PLAN.md`:
 | POST | `/admin/notifications` | Static bearer token, IP-throttled, locally networked in production. |
 | GET  | `/security/overview`, `POST /security/*` | Authenticated. |
 | GET  | `/payments/currencies` | Authenticated. |
-| POST | `/payments/create-deposit` | Authenticated + device token. |
+| POST | `/security/sms-otp/start` | Authenticated. Starts SMS OTP for `deposit` or `transfer`. |
+| POST | `/security/sms-otp/verify` | Authenticated. Verifies SMS OTP and returns a scoped `sms_otp_ticket`. |
+| POST | `/payments/create-deposit` | Authenticated + device token + SMS OTP ticket. |
 | POST | `/payments/nowpayments-webhook` | Public, HMAC-verified, replay-protected, IP-allowlisted, rate-limited. |
-| POST | `/transfers/two-factor/challenge` | Issues a transfer step-up challenge ticket for Firebase PNV verification. |
-| POST | `/transfers/send` | Authenticated + device token, optimistic lock, 2FA-gated, rate-limited. |
+| POST | `/transfers/two-factor/challenge` | Backward-compatible endpoint that starts transfer SMS OTP. |
+| POST | `/transfers/send` | Authenticated + device token + SMS OTP ticket, optimistic lock, rate-limited. |
 | GET  | `/transactions/me` | Authenticated. |
 
 ## Test command
