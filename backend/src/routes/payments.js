@@ -356,9 +356,7 @@ function getCreateDepositErrorCode(error) {
 
 async function depositCurrencies(req, res) {
   const token = getBearerToken(req);
-  const user = await pocketBase.authenticateBearer(token);
-  const requestContext = getRequestContext(req);
-  await requireDeviceTokenForUser(user.id, requestContext);
+  await pocketBase.authenticateBearer(token);
 
   const currencies = await nowPayments.getMerchantCurrencies();
   sendJson(res, 200, {

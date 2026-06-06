@@ -1103,6 +1103,86 @@ describe('Payment idempotency', () => {
   });
 });
 
+describe('Payment device-token boundary', () => {
+  test('currency listing is bearer-only while deposit creation still requires device token', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const { nowPayments } = require('../src/nowpayments');
+    const { depositCurrencies, createDeposit } = require('../src/routes/payments');
+    const originals = {
+      authenticateBearer: pocketBase.authenticateBearer,
+      getMerchantCurrencies: nowPayments.getMerchantCurrencies,
+    };
+    let authCalls = 0;
+    try {
+      pocketBase.authenticateBearer = async (token) => {
+        assert.equal(token, 'bearer-token');
+        authCalls += 1;
+        return { id: 'u1', email: 'u1@example.com' };
+      };
+      nowPayments.getMerchantCurrencies = async () => [
+        {
+          code: 'btc',
+          name: 'Bitcoin',
+          network: 'BTC',
+          min_amount: 0,
+          icon: '',
+          color: '#f7931a',
+          category: 'asset',
+          popular_rank: 1,
+        },
+      ];
+
+      const currenciesRes = makeJsonRes();
+      await depositCurrencies(
+        makeHttpReq({
+          method: 'GET',
+          url: '/payments/currencies',
+          headers: { authorization: 'Bearer bearer-token' },
+        }),
+        currenciesRes,
+      );
+      assert.equal(currenciesRes.statusCode, 200);
+      const payload = JSON.parse(currenciesRes.body);
+      assert.equal(payload.success, true);
+      assert.deepEqual(payload.currencies, [
+        {
+          code: 'btc',
+          name: 'Bitcoin',
+          network: 'BTC',
+          min_amount: 0,
+          icon: '',
+          color: '#f7931a',
+          category: 'asset',
+        },
+      ]);
+
+      await assert.rejects(
+        createDeposit(
+          makeHttpReq({
+            method: 'POST',
+            url: '/payments/create-deposit',
+            headers: { authorization: 'Bearer bearer-token' },
+            body: {
+              amount: 20,
+              currency: 'usd',
+              network: 'btc',
+              idempotency_key: 'dep_test_key_1234567890',
+            },
+          }),
+          makeJsonRes(),
+        ),
+        (error) => error.details?.code === 'device_token_required',
+      );
+      assert.equal(authCalls, 2);
+    } finally {
+      Object.assign(pocketBase, {
+        authenticateBearer: originals.authenticateBearer,
+      });
+      nowPayments.getMerchantCurrencies = originals.getMerchantCurrencies;
+    }
+  });
+});
+
 describe('/users/me/update sensitive profile step-up', () => {
   test('phone changes require current device token and security PIN', async () => {
     const { pocketBase } = require('../src/pocketbase');
