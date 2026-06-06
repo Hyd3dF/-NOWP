@@ -203,6 +203,16 @@ function validateProductionConfig(runtimeConfig) {
     throw new Error('NOWPAYMENTS_IPN_ALLOW_PRIVATE=true is forbidden in production.');
   }
 
+  if (
+    !runtimeConfig.nowPayments.ipnCallbackUrl ||
+    !/^https:\/\//i.test(runtimeConfig.nowPayments.ipnCallbackUrl) ||
+    !/\/payments\/nowpayments-webhook\/?$/i.test(runtimeConfig.nowPayments.ipnCallbackUrl)
+  ) {
+    throw new Error(
+      'NOWPAYMENTS_IPN_CALLBACK_URL must be an HTTPS /payments/nowpayments-webhook endpoint in production.',
+    );
+  }
+
   if (!runtimeConfig.nowPayments.ipnAllowedIps.length) {
     throw new Error(
       'NOWPAYMENTS_IPN_ALLOWED_IPS must list your trusted webhook ingress/proxy IPs in production.',

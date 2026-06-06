@@ -927,6 +927,7 @@ describe('YP-5: production refuses OROYA_LEDGER_ALLOW_UNSIGNED', () => {
       TWO_FACTOR_HMAC_SECRET: process.env.TWO_FACTOR_HMAC_SECRET,
       NOWPAYMENTS_IPN_ALLOW_PRIVATE: process.env.NOWPAYMENTS_IPN_ALLOW_PRIVATE,
       NOWPAYMENTS_IPN_ALLOWED_IPS: process.env.NOWPAYMENTS_IPN_ALLOWED_IPS,
+      NOWPAYMENTS_IPN_CALLBACK_URL: process.env.NOWPAYMENTS_IPN_CALLBACK_URL,
     };
     process.env.NODE_ENV = 'production';
     process.env.POCKETBASE_SUPERUSER_PASSWORD = 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^';
@@ -938,6 +939,7 @@ describe('YP-5: production refuses OROYA_LEDGER_ALLOW_UNSIGNED', () => {
     process.env.TWO_FACTOR_HMAC_SECRET = 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^';
     process.env.NOWPAYMENTS_IPN_ALLOW_PRIVATE = 'false';
     process.env.NOWPAYMENTS_IPN_ALLOWED_IPS = '203.0.113.10';
+    process.env.NOWPAYMENTS_IPN_CALLBACK_URL = 'https://oroya.onrender.com/payments/nowpayments-webhook';
     try {
       delete require.cache[require.resolve('../src/config')];
       const reloaded = require('../src/config');
@@ -2124,6 +2126,7 @@ describe('Production env validation rejects weak secrets', () => {
     OROYA_TRANSFER_2FA_SECRET: 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^',
     TWO_FACTOR_HMAC_SECRET: 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^',
     NOWPAYMENTS_IPN_SECRET_KEY: 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^',
+    NOWPAYMENTS_IPN_CALLBACK_URL: 'https://oroya.onrender.com/payments/nowpayments-webhook',
     OROYA_ADMIN_NOTIFICATION_TOKEN: 'q9K#mP2!vL8$wR3&jT6*yF1@eN4%hX7^',
     NOWPAYMENTS_IPN_ALLOW_PRIVATE: 'false',
     NOWPAYMENTS_IPN_ALLOWED_IPS: '203.0.113.10',
@@ -2200,6 +2203,18 @@ describe('Production env validation rejects weak secrets', () => {
       assert.throws(
         () => require('../src/config'),
         /NOWPAYMENTS_IPN_ALLOWED_IPS must list your trusted webhook ingress/,
+      );
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  test('rejects production NOWPayments without a webhook callback URL', () => {
+    applyEnv({ NOWPAYMENTS_IPN_CALLBACK_URL: '' });
+    try {
+      assert.throws(
+        () => require('../src/config'),
+        /NOWPAYMENTS_IPN_CALLBACK_URL must be an HTTPS/,
       );
     } finally {
       restoreEnv();
