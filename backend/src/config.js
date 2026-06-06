@@ -135,9 +135,13 @@ const config = {
     monthlyLoginAccountLimit: numberOrDefault(process.env.DEVICE_MONTHLY_LOGIN_ACCOUNT_LIMIT, 5),
   },
   firebase: {
+    authProjectId: optional('FIREBASE_AUTH_PROJECT_ID') || optional('FIREBASE_PNV_PROJECT_ID'),
     pnvProjectNumber: optional('FIREBASE_PNV_PROJECT_NUMBER'),
     pnvProjectId: optional('FIREBASE_PNV_PROJECT_ID'),
     pnvJwksUrl: optional('FIREBASE_PNV_JWKS_URL') || 'https://fpnv.googleapis.com/v1beta/jwks',
+  },
+  sms: {
+    provider: optional('SMS_PROVIDER') || 'firebase_auth',
   },
   admin: {
     notificationToken: optional('OROYA_ADMIN_NOTIFICATION_TOKEN'),
@@ -217,6 +221,10 @@ function validateProductionConfig(runtimeConfig) {
     throw new Error(
       'NOWPAYMENTS_IPN_ALLOWED_IPS must list your trusted webhook ingress/proxy IPs in production.',
     );
+  }
+
+  if (runtimeConfig.sms.provider === 'firebase_auth' && !runtimeConfig.firebase.authProjectId) {
+    throw new Error('FIREBASE_AUTH_PROJECT_ID must be set when SMS_PROVIDER=firebase_auth.');
   }
 }
 

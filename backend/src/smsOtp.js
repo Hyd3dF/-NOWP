@@ -3,6 +3,10 @@ const { config } = require('./config');
 const { HttpError } = require('./http');
 const { pocketBase } = require('./pocketbase');
 const { enforceRateLimit } = require('./rateLimit');
+const {
+  phoneNumbersMatch,
+  verifyFirebaseAuthIdToken,
+} = require('./firebaseAuth');
 
 const OTP_TTL_MS = Number(process.env.SMS_OTP_TTL_MS || 5 * 60 * 1000);
 const OTP_TICKET_TTL_MS = Number(process.env.SMS_OTP_TICKET_TTL_MS || 5 * 60 * 1000);
@@ -43,7 +47,8 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
       code: 'sms_phone_invalid',
     });
   }
-  assertSmsProviderConfigured();
+  const provider = getSmsProvider();
+  assertSmsProviderConfigured(provider);
 
   await enforceRateLimit({
     scope: `sms-otp:${normalizedPurpose}`,
@@ -51,6 +56,25 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
     limit: OTP_MAX_PER_10_MIN,
     windowMs: 10 * 60 * 1000,
   });
+
+  if (provider === 'firebase_auth') {
+    await pocketBase.createAuditLog({
+      userId: user.id,
+      action: 'security.firebase_sms_otp_started',
+      ...requestContext,
+      metadata: {
+        purpose: normalizedPurpose,
+        provider,
+      },
+    }).catch(() => {});
+    return {
+      success: true,
+      provider,
+      purpose: normalizedPurpose,
+      phone: normalizedPhone,
+      expires_at: new Date(Date.now() + OTP_TTL_MS).toISOString(),
+    };
+  }
 
   const code = generateOtpCode();
   const codeHash = hashOtpCode({ userId: user.id, purpose: normalizedPurpose, context, code });
@@ -86,10 +110,19 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
   };
 }
 
-async function verifySmsOtp({ user, purpose, context, code, requestContext }) {
+async function verifySmsOtp({ user, purpose, context, code, firebaseIdToken, requestContext }) {
   const normalizedPurpose = normalizePurpose(purpose);
   if (!user?.id) {
     throw new HttpError(401, 'Authentication is required.', { code: 'auth_required' });
+  }
+  if (firebaseIdToken) {
+    return verifyFirebaseSmsOtp({
+      user,
+      purpose: normalizedPurpose,
+      context,
+      firebaseIdToken,
+      requestContext,
+    });
   }
   const cleanCode = String(code || '').trim();
   if (!/^\d{6}$/.test(cleanCode)) {
@@ -126,6 +159,43 @@ async function verifySmsOtp({ user, purpose, context, code, requestContext }) {
     otpId: consumed.record.id,
     expiresAt: Date.now() + OTP_TICKET_TTL_MS,
   });
+  return {
+    success: true,
+    sms_otp_ticket: ticket,
+    expires_at: new Date(Date.now() + OTP_TICKET_TTL_MS).toISOString(),
+  };
+}
+
+async function verifyFirebaseSmsOtp({ user, purpose, context, firebaseIdToken, requestContext }) {
+  const verified = await verifyFirebaseAuthIdToken(firebaseIdToken);
+  if (!phoneNumbersMatch(verified.phoneNumber, user.phone)) {
+    await pocketBase.createAuditLog({
+      userId: user.id,
+      action: 'security.firebase_sms_phone_mismatch',
+      ...requestContext,
+      metadata: {
+        purpose,
+      },
+    }).catch(() => {});
+    throw new HttpError(401, 'Firebase verified phone number does not match this account.', {
+      code: 'firebase_auth_phone_mismatch',
+    });
+  }
+  const ticket = createSmsOtpTicket({
+    userId: user.id,
+    purpose,
+    context,
+    otpId: `firebase_auth:${verified.uid}:${verified.issuedAt}`,
+    expiresAt: Date.now() + OTP_TICKET_TTL_MS,
+  });
+  await pocketBase.createAuditLog({
+    userId: user.id,
+    action: 'security.firebase_sms_otp_verified',
+    ...requestContext,
+    metadata: {
+      purpose,
+    },
+  }).catch(() => {});
   return {
     success: true,
     sms_otp_ticket: ticket,
@@ -213,11 +283,11 @@ function generateOtpCode() {
 }
 
 async function sendSms(phone, message) {
-  const provider = String(process.env.SMS_PROVIDER || '').trim().toLowerCase();
+  const provider = getSmsProvider();
   if (provider === 'twilio') {
     return sendTwilioSms(phone, message);
   }
-  if (process.env.NODE_ENV !== 'production' && process.env.SMS_OTP_DEV_ECHO === 'true') {
+  if (provider === 'dev' && process.env.NODE_ENV !== 'production' && process.env.SMS_OTP_DEV_ECHO === 'true') {
     const match = message.match(/\b(\d{6})\b/);
     return { provider: 'dev', sent: true, devCode: match?.[1] || '' };
   }
@@ -226,8 +296,13 @@ async function sendSms(phone, message) {
   });
 }
 
-function assertSmsProviderConfigured() {
-  const provider = String(process.env.SMS_PROVIDER || '').trim().toLowerCase();
+function assertSmsProviderConfigured(provider = getSmsProvider()) {
+  if (provider === 'firebase_auth') {
+    if (config.firebase?.authProjectId) return;
+    throw new HttpError(503, 'Firebase Auth is not configured.', {
+      code: 'firebase_auth_not_configured',
+    });
+  }
   if (provider === 'twilio') {
     if (
       process.env.TWILIO_ACCOUNT_SID &&
@@ -240,12 +315,16 @@ function assertSmsProviderConfigured() {
       code: 'sms_provider_not_configured',
     });
   }
-  if (process.env.NODE_ENV !== 'production' && process.env.SMS_OTP_DEV_ECHO === 'true') {
+  if (provider === 'dev' && process.env.NODE_ENV !== 'production' && process.env.SMS_OTP_DEV_ECHO === 'true') {
     return;
   }
   throw new HttpError(503, 'SMS provider is not configured.', {
     code: 'sms_provider_not_configured',
   });
+}
+
+function getSmsProvider() {
+  return String(process.env.SMS_PROVIDER || config.sms?.provider || 'firebase_auth').trim().toLowerCase();
 }
 
 async function sendTwilioSms(phone, message) {

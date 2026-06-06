@@ -99,6 +99,12 @@ function signEs256Jwt(header, payload, privateKey) {
   return `${signingInput}.${base64Url(derToJoseSignature(derSignature))}`;
 }
 
+function signRs256Jwt(header, payload, privateKey) {
+  const signingInput = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(payload))}`;
+  const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput), privateKey);
+  return `${signingInput}.${base64Url(signature)}`;
+}
+
 function derToJoseSignature(derSignature) {
   let offset = 0;
   if (derSignature[offset++] !== 0x30) throw new Error('Invalid DER sequence.');
@@ -1491,7 +1497,7 @@ describe('Shared SMS OTP money verification', () => {
     try {
       process.env.NODE_ENV = 'test';
       process.env.SMS_OTP_DEV_ECHO = 'true';
-      delete process.env.SMS_PROVIDER;
+      process.env.SMS_PROVIDER = 'dev';
       pocketBase.adminRequest = mockRateLimitAdminRequest();
       pocketBase.issueTwoFactorOtp = async (userId, purpose, codeHash, ttlMs, receivedContext) => {
         assert.equal(userId, 'u_sms');
@@ -1543,6 +1549,63 @@ describe('Shared SMS OTP money verification', () => {
       else process.env.SMS_OTP_DEV_ECHO = previousEcho;
       if (previousProvider === undefined) delete process.env.SMS_PROVIDER;
       else process.env.SMS_PROVIDER = previousProvider;
+    }
+  });
+
+  test('Firebase Auth phone token verifies and returns a scoped money ticket', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const {
+      canonicalMoneyOtpContext,
+      verifySmsOtp,
+      verifySmsOtpTicket,
+    } = require('../src/smsOtp');
+    const { __setCertificatesForTests } = require('../src/firebaseAuth');
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+    });
+    const keyId = 'firebase-auth-test-key';
+    __setCertificatesForTests([[keyId, publicKey.export({ type: 'spki', format: 'pem' })]]);
+    const now = Math.floor(Date.now() / 1000);
+    const token = signRs256Jwt(
+      { alg: 'RS256', kid: keyId, typ: 'JWT' },
+      {
+        iss: 'https://securetoken.google.com/chirpchat-test',
+        aud: 'chirpchat-test',
+        sub: 'firebase_uid_1',
+        phone_number: '+905551112233',
+        auth_time: now,
+        iat: now,
+        exp: now + 300,
+      },
+      privateKey,
+    );
+    const originals = {
+      createAuditLog: pocketBase.createAuditLog,
+    };
+    const context = canonicalMoneyOtpContext({
+      purpose: 'deposit',
+      amount: 20,
+      currency: 'usd',
+      network: 'btc',
+    });
+    try {
+      pocketBase.createAuditLog = async () => ({ id: 'audit' });
+      const verified = await verifySmsOtp({
+        user: { id: 'u_sms', phone: '+90 555 111 22 33' },
+        purpose: 'deposit',
+        context,
+        firebaseIdToken: token,
+        requestContext: {},
+      });
+      assert.ok(
+        verifySmsOtpTicket(verified.sms_otp_ticket, {
+          userId: 'u_sms',
+          purpose: 'deposit',
+          context,
+        }),
+      );
+    } finally {
+      Object.assign(pocketBase, originals);
     }
   });
 });
@@ -1638,7 +1701,7 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
     try {
       process.env.NODE_ENV = 'test';
       process.env.SMS_OTP_DEV_ECHO = 'true';
-      delete process.env.SMS_PROVIDER;
+      process.env.SMS_PROVIDER = 'dev';
       pocketBase.adminRequest = mockRateLimitAdminRequest();
       pocketBase.authenticateBearer = async () => ({ id: 'sender', phone: '+905551112233' });
       pocketBase.getUserById = async () => ({ id: 'receiver' });

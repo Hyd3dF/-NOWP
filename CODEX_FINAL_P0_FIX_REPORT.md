@@ -4,6 +4,16 @@
 
 Secret, sifre, token veya local `.env` degerleri yazilmadi.
 
+### Firebase Phone Auth update - 2026-06-06
+
+- SMS OTP saglayicisi Firebase Phone Authentication olacak sekilde guncellendi.
+- Mobil uygulamaya `@react-native-firebase/app` ve `@react-native-firebase/auth` eklendi.
+- Deposit ve transfer ekranlari Firebase Phone Auth ile gercek SMS baslatip, kullanicinin girdigi kodu Firebase tarafinda dogrular.
+- Backend artik Firebase Auth ID token imzasini, issuer/audience/expiry/auth_time claim'lerini ve dogrulanmis telefon numarasinin hesap telefonu ile eslestigini kontrol eder.
+- Firebase dogrulamasi basarili olursa backend kisa sureli tek kullanimlik `sms_otp_ticket` uretir; para islemleri yine bu ticket olmadan baslamaz.
+- Expo Go bu native Firebase Phone Auth modulunu icermez; gercek test icin Expo development build veya production build gerekir.
+- Production/deploy icin `SMS_PROVIDER=firebase_auth` ve `FIREBASE_AUTH_PROJECT_ID` zorunludur.
+
 ### Duzeltilen maddeler
 
 - Deposit akisi artik SMS OTP dogrulamasi olmadan `/payments/create-deposit` uzerinden deposit adresi olusturmuyor.
@@ -50,10 +60,10 @@ Secret, sifre, token veya local `.env` degerleri yazilmadi.
 
 ### Kalan gercek riskler
 
-- Production'da gercek SMS icin `SMS_PROVIDER=twilio`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` set edilmeli. Bu degerler yoksa sistem bilincli olarak para islemlerini baslatmaz.
+- Production'da gercek SMS icin `SMS_PROVIDER=firebase_auth` ve `FIREBASE_AUTH_PROJECT_ID` set edilmeli. Firebase native app config dosyalari build ortaminda bulunmali.
 - `SMS_OTP_DEV_ECHO=false` gercek kullanim icin zorunludur. Test echo sadece izole lokal testlerde acilabilir; uygulama UI'i dev/test kodunu kullaniciya gostermez.
 - Kullanici telefon numaralari E.164 formatinda olmalidir; ornek olarak ulke kodu ile baslamalidir.
-- Twilio disinda baska SMS saglayici istenirse `sendSms` provider katmanina yeni adapter eklenmeli.
+- Twilio yedek provider olarak desteklenir, ancak tercih edilen akis Firebase Phone Auth'tur.
 
 ### Karar
 

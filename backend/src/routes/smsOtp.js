@@ -41,6 +41,7 @@ async function verifyMoneySmsOtp(req, res) {
     purpose,
     context,
     code: body.code,
+    firebaseIdToken: body.firebase_id_token || body.firebaseIdToken,
     requestContext,
   });
   sendJson(res, 200, response);

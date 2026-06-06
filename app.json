@@ -10,6 +10,8 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
       "./plugins/withFirebasePnv",
       [
         "expo-camera",
@@ -28,6 +30,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.oroya.app",
+      "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Oroya, yalnızca profil fotoğrafı veya doğrulama görseli seçtiğinizde galeri erişimine ihtiyaç duyar.",
         "NSCameraUsageDescription": "Oroya, yalnızca profil fotoğrafı veya selfie çekmek istediğinizde kamera erişimine ihtiyaç duyar.",

@@ -42,7 +42,7 @@ called out in `SECURITY_AUDIT_PLAN.md`:
 | Finding | Defence |
 |---------|---------|
 | YA-1    | `searchUsersForFriend` no longer matches on `email`. It only matches `username` (case-insensitive prefix via `lower(username) ~`) or an exact `payment_tag`. |
-| YA-3/YP-8 | Deposit and transfer money flows require shared SMS OTP verification before the money operation starts. OTP codes are short-lived, single-use, rate-limited, stored only as HMAC hashes, and exchanged for a scoped `sms_otp_ticket`. Production requires a real SMS provider such as Twilio. |
+| YA-3/YP-8 | Deposit and transfer money flows require shared Firebase Phone Auth verification before the money operation starts. The backend verifies the Firebase ID token, checks that the verified phone matches the account, and exchanges it for a short-lived single-use `sms_otp_ticket`. |
 | YP-1    | Webhook replays are blocked. Each webhook carries a 5-minute timestamp window (`NOWPAYMENTS_IPN_MAX_AGE_SECONDS`) and a server-issued nonce persisted in `webhook_nonces` (24h TTL). Replays return `409 webhook_replay_detected`. |
 | YP-2    | The webhook source is gated by `isWebhookSourceAllowed`. By default only private-network IPs are accepted; an explicit allowlist can be set via `NOWPAYMENTS_IPN_ALLOWED_IPS`. |
 | YP-5    | Production refuses to start if `OROYA_LEDGER_ALLOW_UNSIGNED=true`, the IPN secret is weak, or the admin token is short. |
@@ -200,15 +200,13 @@ Production recommendation: set `NOWPAYMENTS_IPN_ALLOWED_IPS=<your-edge-proxy-ips
 and keep `NOWPAYMENTS_IPN_ALLOW_PRIVATE=false` so only your edge can hit the
 webhook.
 
-## Firebase PNV client build
+## Firebase Phone Auth client build
 
-Firebase Phone Number Verification requires Android native code and a Firebase
-Android configuration file. Expo Go does not include this app's native module,
-so PNV cannot work there. Build with `npx expo prebuild --platform android` or
-EAS Android so `../plugins/withFirebasePnv.js` can inject the native bridge and
-the `com.google.firebase:firebase-pnv:16.0.0-beta01` dependency. See
-`DEPLOYMENT_RUNBOOK.md` for the required `google-services.json`, privacy-policy
-URL, and backend Firebase environment variables.
+Firebase Phone Auth requires native React Native Firebase modules. Expo Go does
+not include those native modules, so real SMS verification must be tested in an
+Expo development build or production build. Add `google-services.json` for
+Android, `GoogleService-Info.plist` for iOS, set `SMS_PROVIDER=firebase_auth`,
+and set backend `FIREBASE_AUTH_PROJECT_ID`.
 
 ## NOWPayments production startup guard
 

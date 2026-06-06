@@ -19,14 +19,17 @@
 ## SMS OTP for money flows
 
 - Deposit and transfer must use the shared SMS OTP flow before any money operation starts.
-- Production must use a real SMS provider. Set:
-  - `SMS_PROVIDER=twilio`
-  - `TWILIO_ACCOUNT_SID`
-  - `TWILIO_AUTH_TOKEN`
-  - `TWILIO_FROM_NUMBER`
+- Production should use Firebase Phone Authentication. Set:
+  - `SMS_PROVIDER=firebase_auth`
+  - `FIREBASE_AUTH_PROJECT_ID`
+- The mobile app must be a development or production build with React Native Firebase, not Expo Go.
+- Add Firebase app config files before building:
+  - Android: `google-services.json`
+  - iOS: `GoogleService-Info.plist`
 - Keep `SMS_OTP_DEV_ECHO=false` in production and in real device testing. If it is enabled for isolated local tests, never expose that build to users.
 - Users must have phone numbers in international E.164 format, for example `+905551112233`.
-- If the SMS provider is missing or rejects the message, the backend intentionally fails closed and deposit/transfer must not continue.
+- If Firebase Auth is missing, the backend intentionally fails closed and deposit/transfer must not continue.
+- Twilio remains supported only as an optional fallback provider when `SMS_PROVIDER=twilio` and Twilio credentials are configured.
 
 ## NOWPayments IPN ingress
 

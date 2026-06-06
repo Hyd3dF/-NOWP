@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/Button';
 import { CoinLogo } from '@/components/ui/CoinLogo';
 import { ApiError, api, createIdempotencyKey } from '@/services/api/client';
 import { startMoneySmsOtp, verifyMoneySmsOtp } from '@/services/api/smsOtp';
+import { confirmFirebasePhoneOtp, startFirebasePhoneOtp } from '@/services/firebasePhoneAuth';
 import { isValidAmount } from '@/utils/validation';
 import {
   FALLBACK_CURRENCIES,
@@ -48,6 +49,7 @@ export default function DepositScreen() {
   const [otpVisible, setOtpVisible] = useState(false);
   const [otpCode, setOtpCode] = useState('');
   const [otpHint, setOtpHint] = useState('');
+  const [otpProvider, setOtpProvider] = useState<'firebase_auth' | 'server_sms'>('firebase_auth');
 
   useEffect(() => {
     let isMounted = true;
@@ -114,11 +116,17 @@ export default function DepositScreen() {
         purpose: 'deposit',
         ...getDepositRequest(),
       });
+      if (started.provider === 'firebase_auth') {
+        await startFirebasePhoneOtp(started.phone || '');
+        setOtpProvider('firebase_auth');
+      } else {
+        setOtpProvider('server_sms');
+      }
       setOtpHint('Enter the SMS code sent to your phone.');
       setOtpCode('');
       setOtpVisible(true);
     } catch (error) {
-      const message = error instanceof ApiError ? getDepositErrorMessage(error.code) : '';
+      const message = getDepositErrorMessage(getPublicErrorCode(error));
       const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
       setError(
         `${message || 'Deposit address could not be created right now. Please try again in a moment.'}${requestId}`,
@@ -136,15 +144,21 @@ export default function DepositScreen() {
     setIsLoading(true);
     setError('');
     try {
+      let firebaseIdToken = '';
+      if (otpProvider === 'firebase_auth') {
+        const confirmed = await confirmFirebasePhoneOtp(otpCode.trim());
+        firebaseIdToken = confirmed.firebaseIdToken;
+      }
       const verified = await verifyMoneySmsOtp({
         purpose: 'deposit',
         ...getDepositRequest(),
-        code: otpCode.trim(),
+        code: otpProvider === 'server_sms' ? otpCode.trim() : undefined,
+        firebaseIdToken: firebaseIdToken || undefined,
       });
       setOtpVisible(false);
       await submitDeposit(verified.sms_otp_ticket);
     } catch (error) {
-      const message = error instanceof ApiError ? getDepositErrorMessage(error.code) : '';
+      const message = getDepositErrorMessage(getPublicErrorCode(error));
       const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
       setError(`${message || 'SMS verification failed. Please try again.'}${requestId}`);
     } finally {
@@ -409,6 +423,14 @@ const styles = StyleSheet.create({
   },
 });
 
+function getPublicErrorCode(error: unknown) {
+  if (error instanceof ApiError) return error.code;
+  if (error && typeof error === 'object' && 'code' in error) {
+    return String((error as { code?: unknown }).code || '');
+  }
+  return '';
+}
+
 function getDepositErrorMessage(code: string) {
   switch (code) {
     case 'auth_failed':
@@ -435,6 +457,24 @@ function getDepositErrorMessage(code: string) {
       return 'Your phone number must include the country code before SMS verification can be used.';
     case 'sms_provider_not_configured':
       return 'SMS verification is not configured yet. Please contact support.';
+    case 'firebase_auth_not_configured':
+      return 'Firebase phone verification is not configured yet. Please contact support.';
+    case 'firebase_auth_native_module_missing':
+      return 'Firebase phone verification requires a development or production app build.';
+    case 'firebase_auth_quota_exceeded':
+    case 'firebase_auth_too_many_requests':
+      return 'Firebase SMS limit has been reached. Please try again later.';
+    case 'firebase_auth_invalid_phone_number':
+    case 'firebase_auth_phone_invalid':
+      return 'Your phone number must include the country code before SMS verification can be used.';
+    case 'firebase_auth_invalid_verification_code':
+    case 'firebase_auth_code_format':
+      return 'The SMS code is incorrect. Please try again.';
+    case 'firebase_auth_session_expired':
+    case 'firebase_auth_token_expired':
+      return 'The SMS code expired. Request a new code and try again.';
+    case 'firebase_auth_phone_mismatch':
+      return 'The verified phone number does not match your account.';
     case 'sms_otp_required':
     case 'sms_otp_invalid':
     case 'sms_otp_locked':

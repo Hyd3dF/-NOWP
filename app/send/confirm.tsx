@@ -20,6 +20,7 @@ import { useTransactionStore } from '@/stores/transactionStore';
 import { ApiError, createIdempotencyKey } from '@/services/api/client';
 import { sendInternalTransfer } from '@/services/api/transfers';
 import { startMoneySmsOtp, verifyMoneySmsOtp } from '@/services/api/smsOtp';
+import { confirmFirebasePhoneOtp, startFirebasePhoneOtp } from '@/services/firebasePhoneAuth';
 import { HeaderBar } from '@/components/shared/HeaderBar';
 import { Avatar } from '@/components/ui/Avatar';
 import { Card } from '@/components/ui/Card';
@@ -40,6 +41,7 @@ export default function SendConfirmScreen() {
   const [twoFactorVisible, setTwoFactorVisible] = useState(false);
   const [smsOtpCode, setSmsOtpCode] = useState('');
   const [smsOtpHint, setSmsOtpHint] = useState('');
+  const [smsOtpProvider, setSmsOtpProvider] = useState<'firebase_auth' | 'server_sms'>('firebase_auth');
   const [pendingPin, setPendingPin] = useState('');
   const [pendingIdempotencyKey, setPendingIdempotencyKey] = useState('');
 
@@ -95,6 +97,12 @@ export default function SendConfirmScreen() {
         amount: numAmount,
         currency: wallet?.currency || 'USD',
       });
+      if (started.provider === 'firebase_auth') {
+        await startFirebasePhoneOtp(started.phone || '');
+        setSmsOtpProvider('firebase_auth');
+      } else {
+        setSmsOtpProvider('server_sms');
+      }
       setPendingPin(pin);
       setPendingIdempotencyKey(idempotencyKey);
       setSmsOtpCode('');
@@ -117,12 +125,18 @@ export default function SendConfirmScreen() {
     setTwoFactorVisible(false);
     setProcessing(true);
     try {
+      let firebaseIdToken = '';
+      if (smsOtpProvider === 'firebase_auth') {
+        const confirmed = await confirmFirebasePhoneOtp(smsOtpCode.trim());
+        firebaseIdToken = confirmed.firebaseIdToken;
+      }
       const verified = await verifyMoneySmsOtp({
         purpose: 'transfer',
         receiverUserId: recipientId || '',
         amount: numAmount,
         currency: wallet?.currency || 'USD',
-        code: smsOtpCode.trim(),
+        code: smsOtpProvider === 'server_sms' ? smsOtpCode.trim() : undefined,
+        firebaseIdToken: firebaseIdToken || undefined,
       });
       await completeTransfer(pendingPin, verified.sms_otp_ticket, pendingIdempotencyKey);
     } catch (error) {
@@ -383,7 +397,8 @@ const styles = StyleSheet.create({
 });
 
 function getTransferErrorMessage(error: unknown) {
-  if (error instanceof ApiError) {
+  const code = getPublicErrorCode(error);
+  if (code) {
     const messages: Record<string, string> = {
       insufficient_balance: 'Your balance is not enough for this transfer.',
       invalid_pin: 'The security PIN is incorrect.',
@@ -397,6 +412,17 @@ function getTransferErrorMessage(error: unknown) {
       sms_phone_missing: 'Add a phone number before sending money.',
       sms_phone_invalid: 'Your phone number must include the country code before SMS verification can be used.',
       sms_provider_not_configured: 'SMS verification is not configured yet. Please contact support.',
+      firebase_auth_not_configured: 'Firebase phone verification is not configured yet. Please contact support.',
+      firebase_auth_native_module_missing: 'Firebase phone verification requires a development or production app build.',
+      firebase_auth_quota_exceeded: 'Firebase SMS limit has been reached. Please try again later.',
+      firebase_auth_too_many_requests: 'Too many SMS attempts. Please try again later.',
+      firebase_auth_invalid_phone_number: 'Your phone number must include the country code before SMS verification can be used.',
+      firebase_auth_phone_invalid: 'Your phone number must include the country code before SMS verification can be used.',
+      firebase_auth_invalid_verification_code: 'The SMS code is incorrect. Please try again.',
+      firebase_auth_code_format: 'Enter the 6-digit SMS code.',
+      firebase_auth_session_expired: 'The SMS code expired. Request a new code and try again.',
+      firebase_auth_token_expired: 'The SMS code expired. Request a new code and try again.',
+      firebase_auth_phone_mismatch: 'The verified phone number does not match this account.',
       sms_otp_required: 'Complete SMS verification to send this transfer.',
       sms_otp_invalid: 'The SMS code is incorrect or expired. Request a new code and try again.',
       sms_otp_locked: 'Too many incorrect SMS codes. Request a new code and try again.',
@@ -410,8 +436,16 @@ function getTransferErrorMessage(error: unknown) {
       connection_failed: 'The backend is not reachable. Please make sure it is running.',
     };
 
-    return messages[error.code] || 'We could not complete this transfer right now.';
+    return messages[code] || 'We could not complete this transfer right now.';
   }
 
   return 'We could not complete this transfer right now.';
+}
+
+function getPublicErrorCode(error: unknown) {
+  if (error instanceof ApiError) return error.code;
+  if (error && typeof error === 'object' && 'code' in error) {
+    return String((error as { code?: unknown }).code || '');
+  }
+  return '';
 }
