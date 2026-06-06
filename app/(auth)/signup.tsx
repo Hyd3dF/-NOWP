@@ -114,22 +114,29 @@ function flagEmoji(countryCode: string) {
 
 function getSignupErrorMessage(error: any) {
   const code = String(error?.code || error?.message || '');
+  const debugSuffix =
+    typeof __DEV__ !== 'undefined' && __DEV__ && code
+      ? ` Debug: ${code}${error?.status ? `/${error.status}` : ''}${error?.requestId ? `/${error.requestId}` : ''}`
+      : '';
   if (code === 'connection_failed') {
-    return 'We could not connect right now. Please check your connection and try again.';
+    return `We could not connect right now. Please check your connection and try again.${debugSuffix}`;
   }
   if (code === 'request_body_too_large') {
-    return 'Your profile photo is too large. Please choose a smaller photo or continue without one.';
+    return `Your profile photo is too large. Please choose a smaller photo or continue without one.${debugSuffix}`;
   }
   if (code === 'account_conflict') {
-    return 'An account with these details may already exist. Please review your email, username, or phone number.';
+    return `An account with these details may already exist. Please review your email, username, or phone number.${debugSuffix}`;
+  }
+  if (code === 'pocketbase_validation_failed') {
+    return `We could not save one of your details. Please review the highlighted fields and try again.${debugSuffix}`;
   }
   if (code === 'validation_failed') {
-    return 'Please review the highlighted details and try again.';
+    return `Please review the highlighted details and try again.${debugSuffix}`;
   }
   if (code === 'server_unavailable') {
-    return 'Account creation is temporarily unavailable. Please try again in a few minutes.';
+    return `Account creation is temporarily unavailable. Please try again in a few minutes.${debugSuffix}`;
   }
-  return 'We could not create your account. Please review your details and try again.';
+  return `We could not create your account. Please review your details and try again.${debugSuffix}`;
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────

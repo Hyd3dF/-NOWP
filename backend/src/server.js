@@ -218,6 +218,23 @@ async function start() {
   await pocketBase.testConnection();
 
   const server = http.createServer((req, res) => {
+    const startedAt = Date.now();
+    const pathName = req.url ? new URL(req.url, 'http://localhost').pathname : '';
+    if (process.env.NODE_ENV !== 'production') {
+      logger.info('request_start', {
+        method: req.method || '',
+        path: pathName,
+      });
+      res.on('finish', () => {
+        logger.info('request_done', {
+          method: req.method || '',
+          path: pathName,
+          status: res.statusCode,
+          duration_ms: Date.now() - startedAt,
+        });
+      });
+    }
+
     handleRequest(req, res).catch((error) => {
       const requestId = crypto.randomBytes(8).toString('hex');
       if (!error.details || typeof error.details !== 'object' || Array.isArray(error.details)) {
@@ -228,6 +245,8 @@ async function start() {
       logger.warn('request_error', {
         status,
         code: body?.code || body?.details?.code || '',
+        field: body?.details?.field || '',
+        validation_fields: body?.details?.validation_fields || '',
         request_id: requestId,
         method: req.method || '',
         path: req.url ? new URL(req.url, 'http://localhost').pathname : '',

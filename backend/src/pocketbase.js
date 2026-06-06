@@ -11,6 +11,23 @@ const LEVEL_ONE_LIMITS = {
   daily_receive_count: 0,
 };
 
+function toPocketBaseValidationError(status, message, details) {
+  const fieldEntries =
+    details && typeof details === 'object' && !Array.isArray(details)
+      ? Object.entries(details).filter(([, value]) => value && typeof value === 'object')
+      : [];
+  const fields = fieldEntries
+    .map(([field]) => String(field).replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 80))
+    .filter(Boolean)
+    .slice(0, 8);
+  const field = fields[0] || '';
+  return new HttpError(status, message || 'PocketBase validation failed.', {
+    code: field ? 'pocketbase_validation_failed' : 'pocketbase_request_failed',
+    ...(field ? { field } : {}),
+    ...(fields.length ? { validation_fields: fields.join(',') } : {}),
+  });
+}
+
 class PocketBaseClient {
   constructor() {
     this.baseUrl = config.pocketBase.url;
@@ -40,7 +57,7 @@ class PocketBaseClient {
 
     if (!response.ok) {
       const message = data?.message || `PocketBase request failed with ${response.status}`;
-      throw new HttpError(response.status, message, data?.data || data);
+      throw toPocketBaseValidationError(response.status, message, data?.data || data);
     }
 
     return data;
@@ -311,7 +328,7 @@ class PocketBaseClient {
     const text = await response.text();
     const data = text ? JSON.parse(text) : null;
     if (!response.ok) {
-      throw new HttpError(response.status, data?.message || 'Failed to create user.', data?.data || data);
+      throw toPocketBaseValidationError(response.status, data?.message || 'Failed to create user.', data?.data || data);
     }
     return this.withUserFileUrls(data);
   }
@@ -364,7 +381,7 @@ class PocketBaseClient {
     const text = await response.text();
     const data = text ? JSON.parse(text) : null;
     if (!response.ok) {
-      throw new HttpError(response.status, data?.message || 'Failed to update user.', data?.data || data);
+      throw toPocketBaseValidationError(response.status, data?.message || 'Failed to update user.', data?.data || data);
     }
     return this.withUserFileUrls(data);
   }

@@ -19,6 +19,7 @@ const PUBLIC_DETAIL_KEYS = new Set([
   'network',
   'external_ingress_denied',
   'request_id',
+  'validation_fields',
 ]);
 
 function sendJson(res, status, body) {

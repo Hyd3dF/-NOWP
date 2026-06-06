@@ -12,11 +12,11 @@ const {
 
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 8;
-const REGISTER_MAX_PER_HOUR = 5;
-const REGISTER_EMAIL_MAX_PER_HOUR = 3;
-const LOGIN_MAX_PER_5_MIN = 10;
-const LOGIN_ACCOUNT_MAX_PER_15_MIN = 20;
-const PASSWORD_RESET_MAX_PER_HOUR = 5;
+const REGISTER_MAX_PER_HOUR = Number(process.env.AUTH_REGISTER_MAX_PER_HOUR || 5);
+const REGISTER_EMAIL_MAX_PER_HOUR = Number(process.env.AUTH_REGISTER_EMAIL_MAX_PER_HOUR || 3);
+const LOGIN_MAX_PER_5_MIN = Number(process.env.AUTH_LOGIN_MAX_PER_5_MIN || 10);
+const LOGIN_ACCOUNT_MAX_PER_15_MIN = Number(process.env.AUTH_LOGIN_ACCOUNT_MAX_PER_15_MIN || 20);
+const PASSWORD_RESET_MAX_PER_HOUR = Number(process.env.AUTH_PASSWORD_RESET_MAX_PER_HOUR || 5);
 
 const loginAttempts = new Map();
 
@@ -211,6 +211,8 @@ async function register(req, res) {
       metadata: {
         email_hash: auditHash(input.email),
         reason_code: error.details?.code || 'register_failed',
+        field: error.details?.field || '',
+        validation_fields: error.details?.validation_fields || '',
       },
     });
     throw error;
