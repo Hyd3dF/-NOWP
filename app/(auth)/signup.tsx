@@ -114,6 +114,7 @@ function flagEmoji(countryCode: string) {
 
 function getSignupErrorMessage(error: any) {
   const code = String(error?.code || error?.message || '');
+  const field = String(error?.field || error?.validationFields?.[0] || '');
   const debugSuffix =
     typeof __DEV__ !== 'undefined' && __DEV__ && code
       ? ` Debug: ${code}${error?.status ? `/${error.status}` : ''}${error?.requestId ? `/${error.requestId}` : ''}`
@@ -128,7 +129,7 @@ function getSignupErrorMessage(error: any) {
     return `An account with these details may already exist. Please review your email, username, or phone number.${debugSuffix}`;
   }
   if (code === 'pocketbase_validation_failed') {
-    return `We could not save one of your details. Please review the highlighted fields and try again.${debugSuffix}`;
+    return `${getSignupFieldErrorMessage(field)}${debugSuffix}`;
   }
   if (code === 'validation_failed') {
     return `Please review the highlighted details and try again.${debugSuffix}`;
@@ -137,6 +138,25 @@ function getSignupErrorMessage(error: any) {
     return `Account creation is temporarily unavailable. Please try again in a few minutes.${debugSuffix}`;
   }
   return `We could not create your account. Please review your details and try again.${debugSuffix}`;
+}
+
+function getSignupFieldErrorMessage(field: string) {
+  if (field === 'phone') {
+    return 'This phone number cannot be used. Please check it or use a different number.';
+  }
+  if (field === 'email') {
+    return 'This email address cannot be used. Please check it or use a different email.';
+  }
+  if (field === 'username') {
+    return 'This username cannot be used. Please choose a different username.';
+  }
+  if (field === 'date_of_birth') {
+    return 'Please check your date of birth and try again.';
+  }
+  if (field === 'profile_photo_file') {
+    return 'Your profile photo cannot be uploaded. Please choose another photo or continue without one.';
+  }
+  return 'We could not save one of your details. Please review your information and try again.';
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────

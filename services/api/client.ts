@@ -29,13 +29,23 @@ export class ApiError extends Error {
   code: string;
   status?: number;
   requestId?: string;
+  field?: string;
+  validationFields?: string[];
 
-  constructor(code: string, status?: number, requestId?: string) {
+  constructor(
+    code: string,
+    status?: number,
+    requestId?: string,
+    field?: string,
+    validationFields?: string[],
+  ) {
     super(code);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
     this.requestId = requestId;
+    this.field = field;
+    this.validationFields = validationFields;
   }
 }
 
@@ -158,7 +168,13 @@ class OroyaApiClient {
       ) {
         await setDeviceToken(null);
       }
-      throw new ApiError(errorCode, response.status, getRequestId(data));
+      throw new ApiError(
+        errorCode,
+        response.status,
+        getRequestId(data),
+        getErrorField(data),
+        getValidationFields(data),
+      );
     }
 
     await captureDeviceToken(data);
@@ -327,4 +343,28 @@ function getRequestId(data: unknown) {
   const nested = details?.request_id ? String(details.request_id) : '';
   const value = topLevel || nested;
   return /^[a-f0-9]{8,32}$/i.test(value) ? value : '';
+}
+
+function getErrorField(data: unknown) {
+  const details = getDetails(data);
+  const value = details?.field ? String(details.field) : '';
+  return /^[a-zA-Z0-9_.-]{1,80}$/.test(value) ? value : '';
+}
+
+function getValidationFields(data: unknown) {
+  const details = getDetails(data);
+  const raw = details?.validation_fields ? String(details.validation_fields) : '';
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((field) => field.trim())
+    .filter((field) => /^[a-zA-Z0-9_.-]{1,80}$/.test(field))
+    .slice(0, 8);
+}
+
+function getDetails(data: unknown): Record<string, unknown> | null {
+  if (!data || typeof data !== 'object') return null;
+  const details = (data as { details?: unknown }).details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  return details as Record<string, unknown>;
 }
