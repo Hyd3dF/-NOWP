@@ -1,5 +1,4 @@
 import { NativeModules } from 'react-native';
-import auth from '@react-native-firebase/auth';
 
 type PhoneConfirmation = {
   confirm: (code: string) => Promise<{
@@ -11,6 +10,8 @@ type PhoneConfirmation = {
 };
 
 let pendingConfirmation: PhoneConfirmation | null = null;
+
+declare const require: (moduleName: string) => unknown;
 
 export class FirebasePhoneAuthError extends Error {
   code: string;
@@ -33,6 +34,7 @@ export async function startFirebasePhoneOtp(phoneNumber: string) {
   }
 
   try {
+    const auth = getFirebaseAuth();
     pendingConfirmation = await auth().signInWithPhoneNumber(cleanPhone);
     return { phoneNumber: cleanPhone };
   } catch (error) {
@@ -76,12 +78,25 @@ export async function confirmFirebasePhoneOtp(code: string) {
 }
 
 function assertFirebaseNativeAvailable() {
-  if (!NativeModules.RNFBAppModule && !NativeModules.RNFBAuthModule) {
+  if (!NativeModules.RNFBAppModule || !NativeModules.RNFBAuthModule) {
     throw new FirebasePhoneAuthError(
       'firebase_auth_native_module_missing',
       'Firebase Phone Auth requires an Expo development build or production build.',
     );
   }
+}
+
+function getFirebaseAuth(): () => { signInWithPhoneNumber: (phoneNumber: string) => Promise<PhoneConfirmation> } {
+  assertFirebaseNativeAvailable();
+  const authModule = require('@react-native-firebase/auth') as {
+    default?: () => { signInWithPhoneNumber: (phoneNumber: string) => Promise<PhoneConfirmation> };
+  } | (() => { signInWithPhoneNumber: (phoneNumber: string) => Promise<PhoneConfirmation> });
+  if (typeof authModule === 'function') return authModule;
+  if (typeof authModule.default === 'function') return authModule.default;
+  throw new FirebasePhoneAuthError(
+    'firebase_auth_native_module_missing',
+    'Firebase Phone Auth native module is unavailable.',
+  );
 }
 
 function mapFirebasePhoneAuthError(error: unknown) {
