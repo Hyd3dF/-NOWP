@@ -82,7 +82,7 @@ export async function confirmFirebasePhoneOtp(code: string) {
 }
 
 function assertFirebaseNativeAvailable() {
-  if (!NativeModules.RNFBAppModule || !NativeModules.RNFBAuthModule) {
+  if (!isFirebasePhoneAuthAvailable()) {
     throw new FirebasePhoneAuthError(
       'firebase_auth_native_module_missing',
       'Phone verification is not available in this test build.',

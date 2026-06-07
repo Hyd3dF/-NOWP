@@ -1470,6 +1470,81 @@ describe('/users/me/update sensitive profile step-up', () => {
 });
 
 describe('Shared SMS OTP money verification', () => {
+  test('start uses five OTP requests per configured window by default', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const {
+      canonicalMoneyOtpContext,
+      getOtpRateLimit,
+      startSmsOtp,
+    } = require('../src/smsOtp');
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousEcho = process.env.SMS_OTP_DEV_ECHO;
+    const previousProvider = process.env.SMS_PROVIDER;
+    const previousMax = process.env.SMS_OTP_MAX_PER_WINDOW;
+    const previousWindow = process.env.SMS_OTP_WINDOW_MS;
+    const originals = {
+      adminRequest: pocketBase.adminRequest,
+      issueTwoFactorOtp: pocketBase.issueTwoFactorOtp,
+      createAuditLog: pocketBase.createAuditLog,
+    };
+    const rateBodies = [];
+    const context = canonicalMoneyOtpContext({
+      purpose: 'deposit',
+      amount: 20,
+      currency: 'usd',
+      network: 'btc',
+    });
+    try {
+      process.env.NODE_ENV = 'test';
+      process.env.SMS_OTP_DEV_ECHO = 'true';
+      process.env.SMS_PROVIDER = 'dev';
+      delete process.env.SMS_OTP_MAX_PER_WINDOW;
+      process.env.SMS_OTP_WINDOW_MS = '300000';
+      pocketBase.adminRequest = async (url, options = {}) => {
+        if (String(url).includes('/api/collections/rate_limit_buckets/records')) {
+          if (options.method === 'POST') {
+            rateBodies.push(options.body);
+            return { id: 'rate_bucket' };
+          }
+          return { items: [] };
+        }
+        throw new Error(`Unexpected adminRequest in test: ${url}`);
+      };
+      pocketBase.issueTwoFactorOtp = async () => ({
+        id: 'otp_sms_1',
+        expires_at: new Date(Date.now() + 300000).toISOString(),
+      });
+      pocketBase.createAuditLog = async () => ({ id: 'audit' });
+
+      assert.equal(getOtpRateLimit(), 5);
+      await startSmsOtp({
+        user: { id: 'u_sms_limit', phone: '+905551112233' },
+        purpose: 'deposit',
+        context,
+        requestContext: {},
+      });
+      assert.equal(rateBodies.length, 1);
+      assert.equal(rateBodies[0].count, 1);
+      assert.equal(rateBodies[0].scope, 'sms-otp:deposit');
+      const windowMs =
+        new Date(rateBodies[0].expires_at).getTime() -
+        new Date(rateBodies[0].window_start).getTime();
+      assert.ok(windowMs >= 299000 && windowMs <= 301000);
+    } finally {
+      Object.assign(pocketBase, originals);
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousEcho === undefined) delete process.env.SMS_OTP_DEV_ECHO;
+      else process.env.SMS_OTP_DEV_ECHO = previousEcho;
+      if (previousProvider === undefined) delete process.env.SMS_PROVIDER;
+      else process.env.SMS_PROVIDER = previousProvider;
+      if (previousMax === undefined) delete process.env.SMS_OTP_MAX_PER_WINDOW;
+      else process.env.SMS_OTP_MAX_PER_WINDOW = previousMax;
+      if (previousWindow === undefined) delete process.env.SMS_OTP_WINDOW_MS;
+      else process.env.SMS_OTP_WINDOW_MS = previousWindow;
+    }
+  });
+
   test('start and verify stores only a hash and returns a scoped ticket', async () => {
     const { pocketBase } = require('../src/pocketbase');
     const {

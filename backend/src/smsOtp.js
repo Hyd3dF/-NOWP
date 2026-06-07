@@ -8,9 +8,10 @@ const {
   verifyFirebaseAuthIdToken,
 } = require('./firebaseAuth');
 
-const OTP_TTL_MS = Number(process.env.SMS_OTP_TTL_MS || 5 * 60 * 1000);
-const OTP_TICKET_TTL_MS = Number(process.env.SMS_OTP_TICKET_TTL_MS || 5 * 60 * 1000);
-const OTP_MAX_PER_10_MIN = Number(process.env.SMS_OTP_MAX_PER_10_MIN || 5);
+const DEFAULT_OTP_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_OTP_TICKET_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_OTP_RATE_LIMIT = 5;
+const DEFAULT_OTP_RATE_WINDOW_MS = 5 * 60 * 1000;
 
 function canonicalMoneyOtpContext(input) {
   const purpose = normalizePurpose(input.purpose);
@@ -53,8 +54,8 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
   await enforceRateLimit({
     scope: `sms-otp:${normalizedPurpose}`,
     identity: user.id,
-    limit: OTP_MAX_PER_10_MIN,
-    windowMs: 10 * 60 * 1000,
+    limit: getOtpRateLimit(),
+    windowMs: getOtpRateWindowMs(),
   });
 
   if (provider === 'firebase_auth') {
@@ -72,7 +73,7 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
       provider,
       purpose: normalizedPurpose,
       phone: normalizedPhone,
-      expires_at: new Date(Date.now() + OTP_TTL_MS).toISOString(),
+      expires_at: new Date(Date.now() + getOtpTtlMs()).toISOString(),
     };
   }
 
@@ -82,7 +83,7 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
     user.id,
     normalizedPurpose,
     codeHash,
-    OTP_TTL_MS,
+    getOtpTtlMs(),
     context,
   );
 
@@ -124,46 +125,53 @@ async function verifySmsOtp({ user, purpose, context, code, firebaseIdToken, req
       requestContext,
     });
   }
-  const cleanCode = String(code || '').trim();
-  if (!/^\d{6}$/.test(cleanCode)) {
-    throw new HttpError(400, 'SMS verification code must be 6 digits.', {
-      code: 'sms_otp_format',
-    });
-  }
-  const codeHash = hashOtpCode({
-    userId: user.id,
-    purpose: normalizedPurpose,
-    context,
-    code: cleanCode,
-  });
-  const consumed = await pocketBase.consumeTwoFactorOtp(user.id, normalizedPurpose, codeHash, context);
-  if (!consumed.ok) {
-    await pocketBase.createAuditLog({
+  const provider = getSmsProvider();
+  if (provider === 'dev' && process.env.NODE_ENV === 'test') {
+    const cleanCode = String(code || '').trim();
+    if (!/^\d{6}$/.test(cleanCode)) {
+      throw new HttpError(400, 'SMS verification code must be 6 digits.', {
+        code: 'sms_otp_format',
+      });
+    }
+    const codeHash = hashOtpCode({
       userId: user.id,
-      action: 'security.sms_otp_failed',
-      ...requestContext,
-      metadata: {
-        purpose: normalizedPurpose,
-        reason: consumed.reason || 'unknown',
-      },
-    }).catch(() => {});
-    throw new HttpError(401, 'SMS verification failed.', {
-      code: consumed.reason === 'locked' ? 'sms_otp_locked' : 'sms_otp_invalid',
+      purpose: normalizedPurpose,
+      context,
+      code: cleanCode,
     });
+    const consumed = await pocketBase.consumeTwoFactorOtp(user.id, normalizedPurpose, codeHash, context);
+    if (!consumed.ok) {
+      await pocketBase.createAuditLog({
+        userId: user.id,
+        action: 'security.sms_otp_failed',
+        ...requestContext,
+        metadata: {
+          purpose: normalizedPurpose,
+          reason: consumed.reason || 'unknown',
+        },
+      }).catch(() => {});
+      throw new HttpError(401, 'SMS verification failed.', {
+        code: consumed.reason === 'locked' ? 'sms_otp_locked' : 'sms_otp_invalid',
+      });
+    }
+
+    const ticket = createSmsOtpTicket({
+      userId: user.id,
+      purpose: normalizedPurpose,
+      context,
+      otpId: consumed.record.id,
+      expiresAt: Date.now() + getOtpTicketTtlMs(),
+    });
+    return {
+      success: true,
+      sms_otp_ticket: ticket,
+      expires_at: new Date(Date.now() + getOtpTicketTtlMs()).toISOString(),
+    };
   }
 
-  const ticket = createSmsOtpTicket({
-    userId: user.id,
-    purpose: normalizedPurpose,
-    context,
-    otpId: consumed.record.id,
-    expiresAt: Date.now() + OTP_TICKET_TTL_MS,
+  throw new HttpError(400, 'Firebase verification token is required.', {
+    code: 'firebase_auth_token_missing',
   });
-  return {
-    success: true,
-    sms_otp_ticket: ticket,
-    expires_at: new Date(Date.now() + OTP_TICKET_TTL_MS).toISOString(),
-  };
 }
 
 async function verifyFirebaseSmsOtp({ user, purpose, context, firebaseIdToken, requestContext }) {
@@ -186,7 +194,7 @@ async function verifyFirebaseSmsOtp({ user, purpose, context, firebaseIdToken, r
     purpose,
     context,
     otpId: `firebase_auth:${verified.uid}:${verified.issuedAt}`,
-    expiresAt: Date.now() + OTP_TICKET_TTL_MS,
+    expiresAt: Date.now() + getOtpTicketTtlMs(),
   });
   await pocketBase.createAuditLog({
     userId: user.id,
@@ -199,7 +207,7 @@ async function verifyFirebaseSmsOtp({ user, purpose, context, firebaseIdToken, r
   return {
     success: true,
     sms_otp_ticket: ticket,
-    expires_at: new Date(Date.now() + OTP_TICKET_TTL_MS).toISOString(),
+    expires_at: new Date(Date.now() + getOtpTicketTtlMs()).toISOString(),
   };
 }
 
@@ -213,7 +221,7 @@ async function verifyAndConsumeSmsOtpTicket({ ticket, userId, purpose, context }
   const accepted = await pocketBase.recordWebhookNonce(
     `sms_otp_ticket:${payload.nonce}`,
     'sms_otp_ticket',
-    OTP_TICKET_TTL_MS,
+    getOtpTicketTtlMs(),
   );
   if (!accepted.accepted) {
     throw new HttpError(401, 'SMS verification was already used.', {
@@ -303,19 +311,7 @@ function assertSmsProviderConfigured(provider = getSmsProvider()) {
       code: 'firebase_auth_not_configured',
     });
   }
-  if (provider === 'twilio') {
-    if (
-      process.env.TWILIO_ACCOUNT_SID &&
-      process.env.TWILIO_AUTH_TOKEN &&
-      process.env.TWILIO_FROM_NUMBER
-    ) {
-      return;
-    }
-    throw new HttpError(503, 'SMS provider is not configured.', {
-      code: 'sms_provider_not_configured',
-    });
-  }
-  if (provider === 'dev' && process.env.NODE_ENV !== 'production' && process.env.SMS_OTP_DEV_ECHO === 'true') {
+  if (provider === 'dev' && process.env.NODE_ENV === 'test') {
     return;
   }
   throw new HttpError(503, 'SMS provider is not configured.', {
@@ -324,7 +320,11 @@ function assertSmsProviderConfigured(provider = getSmsProvider()) {
 }
 
 function getSmsProvider() {
-  return String(process.env.SMS_PROVIDER || config.sms?.provider || 'firebase_auth').trim().toLowerCase();
+  const provider = String(process.env.SMS_PROVIDER || config.sms?.provider || 'firebase_auth').trim().toLowerCase();
+  if (process.env.NODE_ENV === 'test' && provider === 'dev') {
+    return 'dev';
+  }
+  return 'firebase_auth';
 }
 
 async function sendTwilioSms(phone, message) {
@@ -392,6 +392,30 @@ function getOtpSecret() {
   return config.security.transferTwoFactorSecret;
 }
 
+function getPositiveNumber(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function getOtpTtlMs() {
+  return getPositiveNumber('SMS_OTP_TTL_MS', DEFAULT_OTP_TTL_MS);
+}
+
+function getOtpTicketTtlMs() {
+  return getPositiveNumber('SMS_OTP_TICKET_TTL_MS', DEFAULT_OTP_TICKET_TTL_MS);
+}
+
+function getOtpRateLimit() {
+  return getPositiveNumber(
+    'SMS_OTP_MAX_PER_WINDOW',
+    getPositiveNumber('SMS_OTP_MAX_PER_10_MIN', DEFAULT_OTP_RATE_LIMIT),
+  );
+}
+
+function getOtpRateWindowMs() {
+  return getPositiveNumber('SMS_OTP_WINDOW_MS', DEFAULT_OTP_RATE_WINDOW_MS);
+}
+
 module.exports = {
   canonicalMoneyOtpContext,
   startSmsOtp,
@@ -400,4 +424,6 @@ module.exports = {
   createSmsOtpTicket,
   verifySmsOtpTicket,
   hashOtpCode,
+  getOtpRateLimit,
+  getOtpRateWindowMs,
 };
