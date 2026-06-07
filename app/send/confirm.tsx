@@ -45,7 +45,9 @@ export default function SendConfirmScreen() {
   const [twoFactorVisible, setTwoFactorVisible] = useState(false);
   const [smsOtpCode, setSmsOtpCode] = useState('');
   const [smsOtpHint, setSmsOtpHint] = useState('');
-  const [smsOtpProvider, setSmsOtpProvider] = useState<'firebase_auth' | 'server_sms'>('firebase_auth');
+  const [smsOtpError, setSmsOtpError] = useState('');
+  const [smsOtpSubmitting, setSmsOtpSubmitting] = useState(false);
+  const [smsOtpProvider, setSmsOtpProvider] = useState<'firebase_auth'>('firebase_auth');
   const [smsOtpChallenge, setSmsOtpChallenge] = useState('');
   const [pendingPin, setPendingPin] = useState('');
   const [pendingIdempotencyKey, setPendingIdempotencyKey] = useState('');
@@ -88,35 +90,40 @@ export default function SendConfirmScreen() {
     router.replace('/send/receipt');
   };
 
+  const startTransferOtp = async () => {
+    const started = await startMoneySmsOtp({
+      purpose: 'transfer',
+      receiverUserId: recipientId || '',
+      amount: numAmount,
+      currency: wallet?.currency || 'USD',
+    });
+    if (!isFirebasePhoneAuthAvailable()) {
+      throw { code: 'firebase_auth_native_module_missing' };
+    }
+    await startFirebasePhoneOtp(started.phone || '');
+    setSmsOtpProvider('firebase_auth');
+    setSmsOtpChallenge(started.sms_otp_challenge || '');
+    setSmsOtpCode('');
+    setSmsOtpError('');
+    setSmsOtpHint(
+      started.dev_otp
+        ? `Enter the SMS code sent to your phone. Dev code: ${started.dev_otp}`
+        : 'Enter the SMS code sent to your phone.',
+    );
+  };
+
   const handlePinComplete = async (pin: string) => {
     setPinError('');
+    setSmsOtpError('');
 
     setPinModalVisible(false);
     setProcessing(true);
     const idempotencyKey = createIdempotencyKey('tr');
 
     try {
-      if (!isFirebasePhoneAuthAvailable()) {
-        throw { code: 'phone_verification_build_required' };
-      }
-      const started = await startMoneySmsOtp({
-        purpose: 'transfer',
-        receiverUserId: recipientId || '',
-        amount: numAmount,
-        currency: wallet?.currency || 'USD',
-      });
-      if (started.provider === 'firebase_auth') {
-        await startFirebasePhoneOtp(started.phone || '');
-        setSmsOtpProvider('firebase_auth');
-        setSmsOtpChallenge(started.sms_otp_challenge || '');
-      } else {
-        setSmsOtpProvider('server_sms');
-        setSmsOtpChallenge('');
-      }
+      await startTransferOtp();
       setPendingPin(pin);
       setPendingIdempotencyKey(idempotencyKey);
-      setSmsOtpCode('');
-      setSmsOtpHint('Enter the SMS code sent to your phone.');
       setTwoFactorVisible(true);
     } catch (error) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
@@ -126,39 +133,48 @@ export default function SendConfirmScreen() {
     }
   };
 
+  const handleResendTwoFactor = async () => {
+    setSmsOtpSubmitting(true);
+    setSmsOtpError('');
+    try {
+      await startTransferOtp();
+    } catch (error) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      setSmsOtpError(getTransferErrorMessage(error));
+    } finally {
+      setSmsOtpSubmitting(false);
+    }
+  };
+
   const handleTwoFactorSubmit = async () => {
     if (!/^\d{6}$/.test(smsOtpCode.trim())) {
-      Alert.alert('Verification required', 'Enter the 6-digit SMS code before sending.');
+      setSmsOtpError('Enter the 6-digit SMS code before sending.');
       return;
     }
 
-    setTwoFactorVisible(false);
-    setProcessing(true);
+    setSmsOtpSubmitting(true);
+    setSmsOtpError('');
     try {
-      let firebaseIdToken = '';
-      if (smsOtpProvider === 'firebase_auth') {
-        const confirmed = await confirmFirebasePhoneOtp(smsOtpCode.trim());
-        firebaseIdToken = confirmed.firebaseIdToken;
-      }
+      const confirmed = await confirmFirebasePhoneOtp(smsOtpCode.trim());
       const verified = await verifyMoneySmsOtp({
         purpose: 'transfer',
         receiverUserId: recipientId || '',
         amount: numAmount,
         currency: wallet?.currency || 'USD',
-        code: smsOtpProvider === 'server_sms' ? smsOtpCode.trim() : undefined,
-        firebaseIdToken: firebaseIdToken || undefined,
-        smsOtpChallenge: smsOtpProvider === 'firebase_auth' ? smsOtpChallenge : undefined,
+        firebaseIdToken: confirmed.firebaseIdToken,
+        smsOtpChallenge: smsOtpChallenge,
       });
       await completeTransfer(pendingPin, verified.sms_otp_ticket, pendingIdempotencyKey);
-    } catch (error) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-      Alert.alert('Transfer not completed', getTransferErrorMessage(error));
-    } finally {
-      setProcessing(false);
+      setTwoFactorVisible(false);
       setPendingPin('');
       setPendingIdempotencyKey('');
       setSmsOtpCode('');
       setSmsOtpChallenge('');
+    } catch (error) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      setSmsOtpError(getTransferErrorMessage(error));
+    } finally {
+      setSmsOtpSubmitting(false);
     }
   };
 
@@ -276,7 +292,19 @@ export default function SendConfirmScreen() {
               style={styles.twoFactorInput}
               textAlign="center"
             />
-            <Button title="Verify SMS & Send" onPress={handleTwoFactorSubmit} fullWidth />
+            {smsOtpError ? <Text style={styles.twoFactorErrorText}>{smsOtpError}</Text> : null}
+            <Button
+              title="Verify SMS & Send"
+              onPress={handleTwoFactorSubmit}
+              loading={smsOtpSubmitting}
+              fullWidth
+            />
+            <Button
+              title="Resend Code"
+              onPress={handleResendTwoFactor}
+              disabled={smsOtpSubmitting}
+              fullWidth
+            />
           </View>
         </SafeAreaView>
       </Modal>
@@ -405,6 +433,13 @@ const styles = StyleSheet.create({
     marginVertical: spacing['2xl'],
     paddingVertical: spacing.md,
     letterSpacing: 0,
+  },
+  twoFactorErrorText: {
+    ...typography.bodySm,
+    color: colors.light.error,
+    textAlign: 'center',
+    fontWeight: '500',
+    marginBottom: spacing.md,
   },
 });
 

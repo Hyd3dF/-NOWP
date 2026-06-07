@@ -25,7 +25,8 @@
           "photosPermission": "Oroya, yalnızca profil fotoğrafı veya doğrulama görseli seçtiğinizde galeri erişimine ihtiyaç duyar.",
           "cameraPermission": "Oroya, yalnızca profil fotoğrafı veya selfie çekmek istediğinizde kamera erişimine ihtiyaç duyar."
         }
-      ]
+      ],
+      "expo-font"
     ],
     "ios": {
       "supportsTablet": true,
@@ -47,14 +48,22 @@
       },
       "package": "com.oroya.app",
       "permissions": [
-        "CAMERA",
-        "READ_MEDIA_IMAGES",
-        "READ_EXTERNAL_STORAGE"
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
       "favicon": "./assets/favicon.png",
       "bundler": "metro"
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f848ec81-c894-410a-828f-5f9b7d93cad2"
+      }
     }
   }
 }

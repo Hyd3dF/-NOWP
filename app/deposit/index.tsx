@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -54,7 +53,8 @@ export default function DepositScreen() {
   const [otpVisible, setOtpVisible] = useState(false);
   const [otpCode, setOtpCode] = useState('');
   const [otpHint, setOtpHint] = useState('');
-  const [otpProvider, setOtpProvider] = useState<'firebase_auth' | 'server_sms'>('firebase_auth');
+  const [otpError, setOtpError] = useState('');
+  const [otpProvider, setOtpProvider] = useState<'firebase_auth'>('firebase_auth');
   const [otpChallenge, setOtpChallenge] = useState('');
 
   useEffect(() => {
@@ -107,8 +107,30 @@ export default function DepositScreen() {
     router.push('/deposit/result');
   };
 
+  const startDepositOtp = async () => {
+    const started = await startMoneySmsOtp({
+      purpose: 'deposit',
+      ...getDepositRequest(),
+    });
+    if (!isFirebasePhoneAuthAvailable()) {
+      throw { code: 'firebase_auth_native_module_missing' };
+    }
+    await startFirebasePhoneOtp(started.phone || '');
+    setOtpProvider('firebase_auth');
+    setOtpChallenge(started.sms_otp_challenge || '');
+    setOtpHint(
+      started.dev_otp
+        ? `Enter the SMS code sent to your phone. Dev code: ${started.dev_otp}`
+        : 'Enter the SMS code sent to your phone.',
+    );
+    setOtpError('');
+    setOtpCode('');
+    setOtpVisible(true);
+  };
+
   const createDeposit = async () => {
     setError('');
+    setOtpError('');
     setPayment(null);
 
     if (!isValidAmount(amount)) {
@@ -116,31 +138,9 @@ export default function DepositScreen() {
       return;
     }
 
-    if (!isFirebasePhoneAuthAvailable()) {
-      Alert.alert(
-        'Verification unavailable',
-        getDepositErrorMessage('phone_verification_build_required'),
-      );
-      return;
-    }
-
     setIsLoading(true);
     try {
-      const started = await startMoneySmsOtp({
-        purpose: 'deposit',
-        ...getDepositRequest(),
-      });
-      if (started.provider === 'firebase_auth') {
-        await startFirebasePhoneOtp(started.phone || '');
-        setOtpProvider('firebase_auth');
-        setOtpChallenge(started.sms_otp_challenge || '');
-      } else {
-        setOtpProvider('server_sms');
-        setOtpChallenge('');
-      }
-      setOtpHint('Enter the SMS code sent to your phone.');
-      setOtpCode('');
-      setOtpVisible(true);
+      await startDepositOtp();
     } catch (error) {
       const message = getDepositErrorMessage(getPublicErrorCode(error));
       const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
@@ -152,25 +152,36 @@ export default function DepositScreen() {
     }
   };
 
+  const resendDepositOtp = async () => {
+    setIsLoading(true);
+    setError('');
+    setOtpError('');
+    try {
+      await startDepositOtp();
+    } catch (error) {
+      const message = getDepositErrorMessage(getPublicErrorCode(error));
+      const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
+      setOtpError(`${message || 'Could not send a new SMS code. Please try again.'}${requestId}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const verifyOtpAndCreateDeposit = async () => {
     if (!/^\d{6}$/.test(otpCode.trim())) {
-      setError('Enter the 6-digit SMS verification code.');
+      setOtpError('Enter the 6-digit SMS verification code.');
       return;
     }
     setIsLoading(true);
     setError('');
+    setOtpError('');
     try {
-      let firebaseIdToken = '';
-      if (otpProvider === 'firebase_auth') {
-        const confirmed = await confirmFirebasePhoneOtp(otpCode.trim());
-        firebaseIdToken = confirmed.firebaseIdToken;
-      }
+      const confirmed = await confirmFirebasePhoneOtp(otpCode.trim());
       const verified = await verifyMoneySmsOtp({
         purpose: 'deposit',
         ...getDepositRequest(),
-        code: otpProvider === 'server_sms' ? otpCode.trim() : undefined,
-        firebaseIdToken: firebaseIdToken || undefined,
-        smsOtpChallenge: otpProvider === 'firebase_auth' ? otpChallenge : undefined,
+        firebaseIdToken: confirmed.firebaseIdToken,
+        smsOtpChallenge: otpChallenge,
       });
       setOtpVisible(false);
       setOtpChallenge('');
@@ -178,7 +189,7 @@ export default function DepositScreen() {
     } catch (error) {
       const message = getDepositErrorMessage(getPublicErrorCode(error));
       const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
-      setError(`${message || 'SMS verification failed. Please try again.'}${requestId}`);
+      setOtpError(`${message || 'SMS verification failed. Please try again.'}${requestId}`);
     } finally {
       setIsLoading(false);
     }
@@ -283,10 +294,17 @@ export default function DepositScreen() {
               style={styles.otpInput}
               textAlign="center"
             />
+            {otpError ? <Text style={styles.otpErrorText}>{otpError}</Text> : null}
             <Button
               title="Verify & Create Address"
               onPress={verifyOtpAndCreateDeposit}
               loading={isLoading}
+              fullWidth
+            />
+            <Button
+              title="Resend Code"
+              onPress={resendDepositOtp}
+              disabled={isLoading}
               fullWidth
             />
           </View>
@@ -438,6 +456,12 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0,
     paddingVertical: spacing.md,
+  },
+  otpErrorText: {
+    ...typography.bodySm,
+    color: colors.light.error,
+    textAlign: 'center',
+    fontWeight: '500',
   },
 });
 

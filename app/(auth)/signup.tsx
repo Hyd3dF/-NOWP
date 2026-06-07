@@ -94,7 +94,7 @@ const PHONE_COUNTRIES = [
 ];
 
 const TOTAL_STEPS = 4;
-const MAX_PROFILE_PHOTO_BASE64_CHARS = 5_500_000;
+const MAX_PROFILE_PHOTO_BASE64_CHARS = 2_000_000;
 
 const STEP_META = [
   { icon: 'person-outline' as const, title: 'Personal Info', subtitle: 'Tell us about yourself' },
@@ -114,6 +114,7 @@ function flagEmoji(countryCode: string) {
 
 function getSignupErrorMessage(error: any) {
   const code = String(error?.code || error?.message || '');
+  const message = typeof error?.message === 'string' ? error.message.trim() : '';
   const field = String(error?.field || error?.validationFields?.[0] || '');
   const debugSuffix =
     typeof __DEV__ !== 'undefined' && __DEV__ && code
@@ -122,8 +123,17 @@ function getSignupErrorMessage(error: any) {
   if (code === 'connection_failed') {
     return `We could not connect right now. Please check your connection and try again.${debugSuffix}`;
   }
+  if (code === 'request_timeout') {
+    return `Account creation took too long. Please check your connection and try again. If you already received a confirmation, try logging in.${debugSuffix}`;
+  }
+  if (code === 'email_already_exists') {
+    return `An account already exists for this email. Please log in or reset your password.${debugSuffix}`;
+  }
   if (code === 'request_body_too_large') {
     return `Your profile photo is too large. Please choose a smaller photo or continue without one.${debugSuffix}`;
+  }
+  if (code === 'invalid_profile_photo') {
+    return `Your profile photo must be a JPEG, PNG, or WebP image. Please choose another photo or continue without one.${debugSuffix}`;
   }
   if (code === 'account_conflict') {
     return `An account with these details may already exist. Please review your email, username, or phone number.${debugSuffix}`;
@@ -136,6 +146,9 @@ function getSignupErrorMessage(error: any) {
   }
   if (code === 'server_unavailable') {
     return `Account creation is temporarily unavailable. Please try again in a few minutes.${debugSuffix}`;
+  }
+  if (message && message !== code) {
+    return `${message}${debugSuffix}`;
   }
   return `We could not create your account. Please review your details and try again.${debugSuffix}`;
 }
@@ -166,6 +179,7 @@ export default function SignupScreen() {
   const { signup, isLoading } = useAuthStore();
   const scrollRef = useRef<ScrollView>(null);
   const fadeAnim = useRef(new Animated.Value(1)).current;
+  const submittingRef = useRef(false);
 
   // ── Step state ──
   const [step, setStep] = useState(0);
@@ -351,8 +365,13 @@ export default function SignupScreen() {
   // ── Submit (preserved exactly) ──
 
   const handleSignup = async () => {
+    if (submittingRef.current || isLoading) return;
+    submittingRef.current = true;
     setGeneralError('');
-    if (!validate()) return;
+    if (!validate()) {
+      submittingRef.current = false;
+      return;
+    }
 
     try {
       await signup({
@@ -371,6 +390,8 @@ export default function SignupScreen() {
       router.replace('/(tabs)/home');
     } catch (error: any) {
       setGeneralError(getSignupErrorMessage(error));
+    } finally {
+      submittingRef.current = false;
     }
   };
 
@@ -601,6 +622,7 @@ export default function SignupScreen() {
                   title="Create Account"
                   onPress={handleSignup}
                   loading={isLoading}
+                  disabled={isLoading}
                   fullWidth
                   style={styles.actionBtn}
                 />

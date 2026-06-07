@@ -8,6 +8,7 @@ interface RequestOptions {
   body?: unknown;
   headers?: Record<string, string>;
   skipAuth?: boolean;
+  timeoutMs?: number;
 }
 
 const localApiUrl = Platform.select({
@@ -19,6 +20,9 @@ const localApiUrl = Platform.select({
 
 const DEVICE_ID_KEY = 'oroya_device_id';
 const DEVICE_TOKEN_KEY = 'oroya_device_token';
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+const AUTH_REGISTER_TIMEOUT_MS = 45_000;
+const AUTH_LOGIN_TIMEOUT_MS = 20_000;
 let unauthorizedHandler: (() => Promise<void> | void) | null = null;
 let unauthorizedInFlight: Promise<void> | null = null;
 
@@ -35,12 +39,13 @@ export class ApiError extends Error {
 
   constructor(
     code: string,
+    message?: string,
     status?: number,
     requestId?: string,
     field?: string,
     validationFields?: string[],
   ) {
-    super(code);
+    super(message || getDefaultErrorMessage(code));
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
@@ -104,6 +109,7 @@ class OroyaApiClient {
     const headers: Record<string, string> = {
       ...options.headers,
       'Content-Type': 'application/json',
+      'X-Oroya-Request-Id': createIdempotencyKey('req'),
       'X-Oroya-Device-Id': deviceId,
       'X-Oroya-Client-Platform': Platform.OS,
       'X-Oroya-App-Version': Constants.expoConfig?.version || 'unknown',
@@ -125,7 +131,7 @@ class OroyaApiClient {
     }
 
     if (!headers.Authorization) {
-      throw new ApiError('auth_required', 401);
+      throw new ApiError('auth_required', undefined, 401);
     }
 
     return headers;
@@ -136,6 +142,9 @@ class OroyaApiClient {
     const method = options.method || 'GET';
     const headers = await this.getHeaders(options);
     const body = options.body ? JSON.stringify(options.body) : undefined;
+    const timeoutMs = getRequestTimeoutMs(endpoint, options.timeoutMs);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     let response: Response;
     try {
@@ -143,9 +152,21 @@ class OroyaApiClient {
         method,
         headers,
         body,
+        signal: controller.signal,
       });
-    } catch {
-      throw new ApiError('connection_failed');
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new ApiError(
+          'request_timeout',
+          'The request took too long. Please check your connection and try again.',
+        );
+      }
+      throw new ApiError(
+        'connection_failed',
+        'We could not connect right now. Please check your connection and try again.',
+      );
+    } finally {
+      clearTimeout(timeout);
     }
 
     const text = await response.text();
@@ -171,6 +192,7 @@ class OroyaApiClient {
       }
       throw new ApiError(
         errorCode,
+        getErrorMessage(data, errorCode),
         response.status,
         getRequestId(data),
         getErrorField(data),
@@ -211,7 +233,7 @@ function parseJsonResponse(text: string) {
   try {
     return JSON.parse(text);
   } catch {
-    throw new ApiError('invalid_response');
+    throw new ApiError('invalid_response', 'The server returned an unreadable response.');
   }
 }
 
@@ -248,6 +270,58 @@ function getErrorCode(status: number, data: unknown) {
   return 'request_failed';
 }
 
+function getRequestTimeoutMs(endpoint: string, timeoutMs?: number) {
+  if (Number.isFinite(timeoutMs) && Number(timeoutMs) > 0) {
+    return Number(timeoutMs);
+  }
+  if (endpoint === '/auth/register') return AUTH_REGISTER_TIMEOUT_MS;
+  if (endpoint === '/auth/login') return AUTH_LOGIN_TIMEOUT_MS;
+  return DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
+function getErrorMessage(data: unknown, code: string) {
+  if (data && typeof data === 'object') {
+    const error = (data as { error?: unknown }).error;
+    const message = (data as { message?: unknown }).message;
+    const value =
+      typeof error === 'string' && error.trim()
+        ? error
+        : typeof message === 'string' && message.trim()
+          ? message
+          : '';
+    if (value) return value.slice(0, 500);
+  }
+  return getDefaultErrorMessage(code);
+}
+
+function getDefaultErrorMessage(code: string) {
+  switch (code) {
+    case 'request_timeout':
+      return 'The request took too long. Please check your connection and try again.';
+    case 'connection_failed':
+      return 'We could not connect right now. Please check your connection and try again.';
+    case 'auth_required':
+      return 'Please sign in to continue.';
+    case 'email_already_exists':
+      return 'An account already exists for this email. Please log in or reset your password.';
+    case 'request_body_too_large':
+      return 'The upload is too large. Please choose a smaller file and try again.';
+    case 'server_unavailable':
+      return 'The service is temporarily unavailable. Please try again in a few minutes.';
+    default:
+      return 'The request could not be completed. Please try again.';
+  }
+}
+
+function isAbortError(error: unknown) {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      'name' in error &&
+      String((error as { name?: unknown }).name) === 'AbortError',
+  );
+}
+
 function isSessionAuthFailure(status: number, errorCode: string) {
   if (status !== 401 && status !== 403) return false;
   return (
@@ -278,7 +352,11 @@ async function getOrCreateDeviceId() {
     await SecureStore.setItemAsync(DEVICE_ID_KEY, deviceId, SECURE_STORE_OPTIONS);
     return deviceId;
   } catch {
-    throw new ApiError('device_identity_unavailable', 500);
+    throw new ApiError(
+      'device_identity_unavailable',
+      'This device could not be identified securely.',
+      500,
+    );
   }
 }
 

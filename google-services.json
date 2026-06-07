@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "571390546875",
+    "project_id": "chirpchat-khgt0",
+    "storage_bucket": "chirpchat-khgt0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:571390546875:android:8f06a2ff161921c4c9aa9e",
+        "android_client_info": {
+          "package_name": "com.oroya.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "571390546875-fvujhvai3hbq7c6rle22rr53713lev74.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAAM0XbKgTU_sjciea9oQRxbsIi9q61wZ4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "571390546875-5ssgeevkroifg42c5ac25sst4blms3iv.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "571390546875-ikfpb4l1mfeaoe1joj98p33a8hojllgd.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.oroya.app"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

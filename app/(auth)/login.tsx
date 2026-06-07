@@ -197,14 +197,24 @@ export default function LoginScreen() {
 
 function getLoginErrorMessage(error: any) {
   const code = String(error?.code || error?.message || '');
+  const message = typeof error?.message === 'string' ? error.message.trim() : '';
   if (code === 'connection_failed') {
     return 'We could not connect right now. Please check your connection and try again.';
+  }
+  if (code === 'request_timeout') {
+    return 'Sign-in took too long. Please check your connection and try again.';
   }
   if (code === 'server_unavailable') {
     return 'Sign-in is temporarily unavailable. Please try again in a few minutes.';
   }
   if (code === 'validation_failed') {
     return 'Please check your email and password, then try again.';
+  }
+  if (code === 'invalid_credentials') {
+    return 'Email or password is incorrect.';
+  }
+  if (message && message !== code) {
+    return message;
   }
   return 'We could not sign you in with those details.';
 }

@@ -13,11 +13,15 @@ interface MoneySmsOtpInput {
 interface SmsOtpStartResponse {
   success: boolean;
   purpose: SmsOtpPurpose;
-  provider?: 'firebase_auth' | 'twilio' | 'dev';
+  provider: 'firebase_auth' | 'dev';
   phone?: string;
   expires_at: string;
   sms_otp_challenge?: string;
   dev_otp?: string;
+  metadata?: {
+    sent?: boolean;
+    delivery_provider?: 'dev';
+  };
 }
 
 interface SmsOtpVerifyResponse {

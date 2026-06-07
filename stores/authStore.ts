@@ -124,10 +124,22 @@ function mapVerificationStatus(status?: string): UserProfile['kycStatus'] {
 }
 
 async function persistSession(user: UserProfile, token: string) {
-  await Promise.all([
-    SecureStore.setItemAsync(SECURE_KEYS.USER, JSON.stringify(user), SECURE_STORE_OPTIONS),
-    SecureStore.setItemAsync(SECURE_KEYS.TOKEN, token, SECURE_STORE_OPTIONS),
-  ]);
+  try {
+    await SecureStore.setItemAsync(SECURE_KEYS.USER, JSON.stringify(user), SECURE_STORE_OPTIONS);
+    await SecureStore.setItemAsync(SECURE_KEYS.TOKEN, token, SECURE_STORE_OPTIONS);
+  } catch (error) {
+    await clearStoredSession().catch(() => {});
+    throw error;
+  }
+}
+
+async function persistPinConfigured() {
+  try {
+    await SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE, SECURE_STORE_OPTIONS);
+  } catch (error) {
+    await clearStoredSession().catch(() => {});
+    throw error;
+  }
 }
 
 async function clearStoredSession() {
@@ -240,7 +252,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signup: async (input: SignupInput) => {
     set({ isLoading: true });
     try {
-      await api.post<{ success: boolean; requiresLogin: boolean }>(
+      const registerResponse = await api.post<AuthResponse>(
         '/auth/register',
         {
           first_name: input.firstName.trim(),
@@ -260,24 +272,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         true,
       );
 
-      const loginResponse = await api.post<AuthResponse>(
-        '/auth/login',
-        {
-          identity: input.email.trim().toLowerCase(),
-          password: input.password,
-        },
-        undefined,
-        true,
-      );
-
-      const user = mapBackendUser(loginResponse.user);
-      await Promise.all([
-        persistSession(user, loginResponse.token),
-        SecureStore.setItemAsync(SECURE_KEYS.PIN, PIN_CONFIGURED_VALUE, SECURE_STORE_OPTIONS),
-      ]);
+      const user = mapBackendUser(registerResponse.user);
+      await persistSession(user, registerResponse.token);
+      await persistPinConfigured();
       set({ user, pin: PIN_CONFIGURED_VALUE, isAuthenticated: true, isLoading: false });
     } catch (error) {
       await setDeviceToken(null);
+      await clearStoredSession().catch(() => {});
       set({ isLoading: false });
       throw error;
     }
