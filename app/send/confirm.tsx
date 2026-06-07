@@ -46,6 +46,7 @@ export default function SendConfirmScreen() {
   const [smsOtpCode, setSmsOtpCode] = useState('');
   const [smsOtpHint, setSmsOtpHint] = useState('');
   const [smsOtpProvider, setSmsOtpProvider] = useState<'firebase_auth' | 'server_sms'>('firebase_auth');
+  const [smsOtpChallenge, setSmsOtpChallenge] = useState('');
   const [pendingPin, setPendingPin] = useState('');
   const [pendingIdempotencyKey, setPendingIdempotencyKey] = useState('');
 
@@ -107,8 +108,10 @@ export default function SendConfirmScreen() {
       if (started.provider === 'firebase_auth') {
         await startFirebasePhoneOtp(started.phone || '');
         setSmsOtpProvider('firebase_auth');
+        setSmsOtpChallenge(started.sms_otp_challenge || '');
       } else {
         setSmsOtpProvider('server_sms');
+        setSmsOtpChallenge('');
       }
       setPendingPin(pin);
       setPendingIdempotencyKey(idempotencyKey);
@@ -144,6 +147,7 @@ export default function SendConfirmScreen() {
         currency: wallet?.currency || 'USD',
         code: smsOtpProvider === 'server_sms' ? smsOtpCode.trim() : undefined,
         firebaseIdToken: firebaseIdToken || undefined,
+        smsOtpChallenge: smsOtpProvider === 'firebase_auth' ? smsOtpChallenge : undefined,
       });
       await completeTransfer(pendingPin, verified.sms_otp_ticket, pendingIdempotencyKey);
     } catch (error) {
@@ -154,6 +158,7 @@ export default function SendConfirmScreen() {
       setPendingPin('');
       setPendingIdempotencyKey('');
       setSmsOtpCode('');
+      setSmsOtpChallenge('');
     }
   };
 
@@ -436,6 +441,9 @@ function getTransferErrorMessage(error: unknown) {
       sms_otp_invalid: 'The SMS code is incorrect or expired. Request a new code and try again.',
       sms_otp_locked: 'Too many incorrect SMS codes. Request a new code and try again.',
       sms_otp_ticket_used: 'This SMS verification was already used. Request a new code and try again.',
+      sms_otp_challenge_required: 'Request a new SMS code and try again.',
+      sms_otp_challenge_invalid: 'Request a new SMS code and try again.',
+      sms_otp_challenge_used: 'This SMS verification was already used. Request a new code and try again.',
       two_factor_required: 'Complete phone verification to send this transfer.',
       firebase_pnv_token_invalid: 'Phone verification failed.',
       firebase_pnv_token_expired: 'Phone verification expired. Please verify again.',

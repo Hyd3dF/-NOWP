@@ -74,6 +74,13 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
       purpose: normalizedPurpose,
       phone: normalizedPhone,
       expires_at: new Date(Date.now() + getOtpTtlMs()).toISOString(),
+      sms_otp_challenge: createSmsOtpChallenge({
+        userId: user.id,
+        purpose: normalizedPurpose,
+        context,
+        phone: normalizedPhone,
+        expiresAt: Date.now() + getOtpTtlMs(),
+      }),
     };
   }
 
@@ -111,7 +118,15 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
   };
 }
 
-async function verifySmsOtp({ user, purpose, context, code, firebaseIdToken, requestContext }) {
+async function verifySmsOtp({
+  user,
+  purpose,
+  context,
+  code,
+  firebaseIdToken,
+  smsOtpChallenge,
+  requestContext,
+}) {
   const normalizedPurpose = normalizePurpose(purpose);
   if (!user?.id) {
     throw new HttpError(401, 'Authentication is required.', { code: 'auth_required' });
@@ -122,6 +137,7 @@ async function verifySmsOtp({ user, purpose, context, code, firebaseIdToken, req
       purpose: normalizedPurpose,
       context,
       firebaseIdToken,
+      smsOtpChallenge,
       requestContext,
     });
   }
@@ -174,7 +190,25 @@ async function verifySmsOtp({ user, purpose, context, code, firebaseIdToken, req
   });
 }
 
-async function verifyFirebaseSmsOtp({ user, purpose, context, firebaseIdToken, requestContext }) {
+async function verifyFirebaseSmsOtp({
+  user,
+  purpose,
+  context,
+  firebaseIdToken,
+  smsOtpChallenge,
+  requestContext,
+}) {
+  const challenge = verifySmsOtpChallenge(smsOtpChallenge, {
+    userId: user.id,
+    purpose,
+    context,
+    phone: user.phone,
+  });
+  if (!challenge) {
+    throw new HttpError(401, 'SMS verification must be started again.', {
+      code: 'sms_otp_challenge_invalid',
+    });
+  }
   const verified = await verifyFirebaseAuthIdToken(firebaseIdToken);
   if (!phoneNumbersMatch(verified.phoneNumber, user.phone)) {
     await pocketBase.createAuditLog({
@@ -187,6 +221,16 @@ async function verifyFirebaseSmsOtp({ user, purpose, context, firebaseIdToken, r
     }).catch(() => {});
     throw new HttpError(401, 'Firebase verified phone number does not match this account.', {
       code: 'firebase_auth_phone_mismatch',
+    });
+  }
+  const accepted = await pocketBase.recordWebhookNonce(
+    `sms_otp_challenge:${challenge.nonce}`,
+    'sms_otp_challenge',
+    getOtpTtlMs(),
+  );
+  if (!accepted.accepted) {
+    throw new HttpError(401, 'SMS verification must be started again.', {
+      code: 'sms_otp_challenge_used',
     });
   }
   const ticket = createSmsOtpTicket({
@@ -248,6 +292,57 @@ function createSmsOtpTicket({ userId, purpose, context, otpId, expiresAt }) {
   return `${data}.${signature}`;
 }
 
+function createSmsOtpChallenge({ userId, purpose, context, phone, expiresAt }) {
+  const payload = {
+    userId,
+    purpose: normalizePurpose(purpose),
+    contextHash: hashContext(context),
+    phoneHash: hashPhone(phone),
+    expiresAt,
+    nonce: crypto.randomBytes(16).toString('hex'),
+  };
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', getOtpSecret())
+    .update(data)
+    .digest('base64url');
+  return `${data}.${signature}`;
+}
+
+function verifySmsOtpChallenge(challenge, expected) {
+  const raw = String(challenge || '');
+  if (!raw) {
+    throw new HttpError(401, 'SMS verification must be started again.', {
+      code: 'sms_otp_challenge_required',
+    });
+  }
+  const dotIndex = raw.indexOf('.');
+  if (dotIndex < 0) return null;
+  const data = raw.slice(0, dotIndex);
+  const signature = raw.slice(dotIndex + 1);
+  const expectedSignature = crypto
+    .createHmac('sha256', getOtpSecret())
+    .update(data)
+    .digest('base64url');
+  const sigBuf = Buffer.from(signature);
+  const expectedBuf = Buffer.from(expectedSignature);
+  if (sigBuf.length !== expectedBuf.length) return null;
+  if (!crypto.timingSafeEqual(sigBuf, expectedBuf)) return null;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (payload.userId !== expected.userId) return null;
+  if (payload.purpose !== normalizePurpose(expected.purpose)) return null;
+  if (payload.contextHash !== hashContext(expected.context)) return null;
+  if (payload.phoneHash !== hashPhone(expected.phone)) return null;
+  if (Number(payload.expiresAt) < Date.now()) return null;
+  if (!/^[a-f0-9]{32}$/.test(String(payload.nonce || ''))) return null;
+  return payload;
+}
+
 function verifySmsOtpTicket(ticket, expected) {
   const raw = String(ticket || '');
   const dotIndex = raw.indexOf('.');
@@ -284,6 +379,10 @@ function hashOtpCode({ userId, purpose, context, code }) {
 
 function hashContext(context) {
   return crypto.createHash('sha256').update(String(context || '')).digest('hex');
+}
+
+function hashPhone(phone) {
+  return crypto.createHash('sha256').update(String(phone || '').replace(/\s+/g, '')).digest('hex');
 }
 
 function generateOtpCode() {
@@ -422,6 +521,8 @@ module.exports = {
   verifySmsOtp,
   verifyAndConsumeSmsOtpTicket,
   createSmsOtpTicket,
+  createSmsOtpChallenge,
+  verifySmsOtpChallenge,
   verifySmsOtpTicket,
   hashOtpCode,
   getOtpRateLimit,

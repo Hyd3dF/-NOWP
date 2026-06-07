@@ -55,6 +55,7 @@ export default function DepositScreen() {
   const [otpCode, setOtpCode] = useState('');
   const [otpHint, setOtpHint] = useState('');
   const [otpProvider, setOtpProvider] = useState<'firebase_auth' | 'server_sms'>('firebase_auth');
+  const [otpChallenge, setOtpChallenge] = useState('');
 
   useEffect(() => {
     let isMounted = true;
@@ -132,8 +133,10 @@ export default function DepositScreen() {
       if (started.provider === 'firebase_auth') {
         await startFirebasePhoneOtp(started.phone || '');
         setOtpProvider('firebase_auth');
+        setOtpChallenge(started.sms_otp_challenge || '');
       } else {
         setOtpProvider('server_sms');
+        setOtpChallenge('');
       }
       setOtpHint('Enter the SMS code sent to your phone.');
       setOtpCode('');
@@ -167,8 +170,10 @@ export default function DepositScreen() {
         ...getDepositRequest(),
         code: otpProvider === 'server_sms' ? otpCode.trim() : undefined,
         firebaseIdToken: firebaseIdToken || undefined,
+        smsOtpChallenge: otpProvider === 'firebase_auth' ? otpChallenge : undefined,
       });
       setOtpVisible(false);
+      setOtpChallenge('');
       await submitDeposit(verified.sms_otp_ticket);
     } catch (error) {
       const message = getDepositErrorMessage(getPublicErrorCode(error));
@@ -496,6 +501,9 @@ function getDepositErrorMessage(code: string) {
     case 'sms_otp_invalid':
     case 'sms_otp_locked':
     case 'sms_otp_ticket_used':
+    case 'sms_otp_challenge_required':
+    case 'sms_otp_challenge_invalid':
+    case 'sms_otp_challenge_used':
       return 'SMS verification failed. Request a new code and try again.';
     case 'deposit_currency_unavailable':
       return 'This crypto/network is not available for deposit right now. Please choose another coin.';

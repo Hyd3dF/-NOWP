@@ -16,6 +16,7 @@ interface SmsOtpStartResponse {
   provider?: 'firebase_auth' | 'twilio' | 'dev';
   phone?: string;
   expires_at: string;
+  sms_otp_challenge?: string;
   dev_otp?: string;
 }
 
@@ -25,7 +26,12 @@ interface SmsOtpVerifyResponse {
   expires_at: string;
 }
 
-function toBody(input: MoneySmsOtpInput, code?: string, firebaseIdToken?: string) {
+function toBody(
+  input: MoneySmsOtpInput,
+  code?: string,
+  firebaseIdToken?: string,
+  smsOtpChallenge?: string,
+) {
   return {
     purpose: input.purpose,
     amount: input.amount,
@@ -34,6 +40,7 @@ function toBody(input: MoneySmsOtpInput, code?: string, firebaseIdToken?: string
     receiver_user_id: input.receiverUserId,
     code,
     firebase_id_token: firebaseIdToken,
+    sms_otp_challenge: smsOtpChallenge,
   };
 }
 
@@ -41,9 +48,15 @@ export function startMoneySmsOtp(input: MoneySmsOtpInput) {
   return api.post<SmsOtpStartResponse>('/security/sms-otp/start', toBody(input));
 }
 
-export function verifyMoneySmsOtp(input: MoneySmsOtpInput & { code?: string; firebaseIdToken?: string }) {
+export function verifyMoneySmsOtp(
+  input: MoneySmsOtpInput & {
+    code?: string;
+    firebaseIdToken?: string;
+    smsOtpChallenge?: string;
+  },
+) {
   return api.post<SmsOtpVerifyResponse>(
     '/security/sms-otp/verify',
-    toBody(input, input.code, input.firebaseIdToken),
+    toBody(input, input.code, input.firebaseIdToken, input.smsOtpChallenge),
   );
 }

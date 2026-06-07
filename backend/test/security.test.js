@@ -1517,7 +1517,7 @@ describe('Shared SMS OTP money verification', () => {
       pocketBase.createAuditLog = async () => ({ id: 'audit' });
 
       assert.equal(getOtpRateLimit(), 5);
-      await startSmsOtp({
+      const started = await startSmsOtp({
         user: { id: 'u_sms_limit', phone: '+905551112233' },
         purpose: 'deposit',
         context,
@@ -1631,6 +1631,7 @@ describe('Shared SMS OTP money verification', () => {
     const { pocketBase } = require('../src/pocketbase');
     const {
       canonicalMoneyOtpContext,
+      createSmsOtpChallenge,
       verifySmsOtp,
       verifySmsOtpTicket,
     } = require('../src/smsOtp');
@@ -1656,6 +1657,7 @@ describe('Shared SMS OTP money verification', () => {
     );
     const originals = {
       createAuditLog: pocketBase.createAuditLog,
+      recordWebhookNonce: pocketBase.recordWebhookNonce,
     };
     const context = canonicalMoneyOtpContext({
       purpose: 'deposit',
@@ -1665,13 +1667,39 @@ describe('Shared SMS OTP money verification', () => {
     });
     try {
       pocketBase.createAuditLog = async () => ({ id: 'audit' });
+      const consumedChallenges = [];
+      pocketBase.recordWebhookNonce = async (nonce, source) => {
+        consumedChallenges.push([nonce, source]);
+        return { accepted: true };
+      };
+      await assert.rejects(
+        () => verifySmsOtp({
+          user: { id: 'u_sms', phone: '+90 555 111 22 33' },
+          purpose: 'deposit',
+          context,
+          firebaseIdToken: token,
+          requestContext: {},
+        }),
+        (error) => error.details?.code === 'sms_otp_challenge_required',
+      );
+      const challenge = createSmsOtpChallenge({
+        userId: 'u_sms',
+        purpose: 'deposit',
+        context,
+        phone: '+905551112233',
+        expiresAt: Date.now() + 300000,
+      });
       const verified = await verifySmsOtp({
         user: { id: 'u_sms', phone: '+90 555 111 22 33' },
         purpose: 'deposit',
         context,
         firebaseIdToken: token,
+        smsOtpChallenge: challenge,
         requestContext: {},
       });
+      assert.equal(consumedChallenges.length, 1);
+      assert.match(consumedChallenges[0][0], /^sms_otp_challenge:/);
+      assert.equal(consumedChallenges[0][1], 'sms_otp_challenge');
       assert.ok(
         verifySmsOtpTicket(verified.sms_otp_ticket, {
           userId: 'u_sms',
