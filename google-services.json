@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "571390546875-ahci7ahjaht0g7n5jti965hf4nqmqtlt.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.oroya.app",
+            "certificate_hash": "6b53394408596e29124c4e638e09140e33083e12"
+          }
+        },
+        {
           "client_id": "571390546875-fvujhvai3hbq7c6rle22rr53713lev74.apps.googleusercontent.com",
           "client_type": 3
         }
