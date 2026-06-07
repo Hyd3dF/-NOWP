@@ -11,6 +11,8 @@ const LEVEL_ONE_LIMITS = {
   daily_receive_count: 0,
 };
 
+const DEFAULT_POCKETBASE_TIMEOUT_MS = Number(process.env.POCKETBASE_TIMEOUT_MS || 5000);
+
 function toPocketBaseValidationError(status, message, details) {
   const fieldEntries =
     details && typeof details === 'object' && !Array.isArray(details)
@@ -28,6 +30,26 @@ function toPocketBaseValidationError(status, message, details) {
   });
 }
 
+async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_POCKETBASE_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: init.signal || controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new HttpError(503, 'PocketBase request timed out.', {
+        code: 'pocketbase_timeout',
+      });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 class PocketBaseClient {
   constructor() {
     this.baseUrl = config.pocketBase.url;
@@ -41,11 +63,11 @@ class PocketBaseClient {
       ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
     };
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await fetchWithTimeout(`${this.baseUrl}${path}`, {
       method: options.method || 'GET',
       headers,
       body: options.body ? JSON.stringify(options.body) : options.rawBody,
-    });
+    }, options.timeoutMs);
 
     const text = await response.text();
     let data = null;
@@ -316,7 +338,7 @@ class PocketBaseClient {
     formData.append('profile_photo_file', new Blob([fileBuffer], { type: mimeType }), fileName);
 
     const token = await this.getSuperuserToken();
-    const response = await fetch(`${this.baseUrl}/api/collections/users/records`, {
+    const response = await fetchWithTimeout(`${this.baseUrl}/api/collections/users/records`, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -369,7 +391,7 @@ class PocketBaseClient {
     formData.append('profile_photo_file', new Blob([fileBuffer], { type: mimeType }), fileName);
 
     const token = await this.getSuperuserToken();
-    const response = await fetch(`${this.baseUrl}/api/collections/users/records/${encodeURIComponent(userId)}`, {
+    const response = await fetchWithTimeout(`${this.baseUrl}/api/collections/users/records/${encodeURIComponent(userId)}`, {
       method: 'PATCH',
       headers: {
         Accept: 'application/json',
@@ -2846,4 +2868,8 @@ module.exports = {
   hashBearerToken,
   pocketBase,
   sanitizeUser,
+};
+
+module.exports.__testables = {
+  fetchWithTimeout,
 };

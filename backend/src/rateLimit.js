@@ -4,6 +4,7 @@ const { pocketBase } = require('./pocketbase');
 
 const DEFAULT_NAMESPACE = 'global';
 const localBuckets = new Map();
+const localFallbackBuckets = new Map();
 let lastLocalSweepAt = 0;
 
 function buildBucketKey(parts) {
@@ -27,7 +28,7 @@ async function getBucket(scope, key) {
   return result.items?.[0] || null;
 }
 
-async function enforceRateLimit({ scope, identity, limit, windowMs, failClosed = true }) {
+async function enforceRateLimit({ scope, identity, limit, windowMs, failClosed = false }) {
   if (!scope || !identity) return;
   const max = Number(limit);
   const window = Number(windowMs);
@@ -123,6 +124,7 @@ async function enforceRateLimit({ scope, identity, limit, windowMs, failClosed =
   } catch (error) {
     if (error instanceof HttpError) throw error;
     if (error.status === 429) throw error;
+    enforceLocalFallbackLimit(bucketKey, max, window, now);
     if (failClosed) {
       throw new HttpError(503, 'Rate limiter is unavailable.', {
         code: 'rate_limiter_unavailable',
@@ -158,6 +160,28 @@ function sweepLocalBuckets(now = Date.now()) {
       localBuckets.delete(key);
     }
   }
+  for (const [key, bucket] of localFallbackBuckets) {
+    if (!bucket || bucket.expiresAt <= now) {
+      localFallbackBuckets.delete(key);
+    }
+  }
+}
+
+function enforceLocalFallbackLimit(bucketKey, limit, windowMs, now = Date.now()) {
+  sweepLocalBuckets(now);
+  const existing = localFallbackBuckets.get(bucketKey);
+  if (!existing || existing.expiresAt <= now) {
+    localFallbackBuckets.set(bucketKey, { count: 1, expiresAt: now + windowMs });
+    return;
+  }
+  if (existing.count >= limit) {
+    const retryAfter = Math.max(1, Math.ceil((existing.expiresAt - now) / 1000));
+    throw new HttpError(429, 'Too many requests. Please slow down.', {
+      code: 'rate_limited_local_fallback',
+      retry_after_seconds: retryAfter,
+    });
+  }
+  existing.count += 1;
 }
 
 function withScope(scope, fn) {
@@ -168,6 +192,7 @@ module.exports = {
   DEFAULT_NAMESPACE,
   buildBucketKey,
   enforceRateLimit,
+  enforceLocalFallbackLimit,
   hashBucketKey,
   enforceLocalBurstLimit,
   sweepLocalBuckets,

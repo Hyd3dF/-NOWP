@@ -4,7 +4,7 @@ const levels = ['debug', 'info', 'warn', 'error', 'fatal'];
 const numeric = Object.fromEntries(levels.map((level, index) => [level, index]));
 
 const envLevel = (process.env.LOG_LEVEL || 'info').toLowerCase();
-const minLevel = numeric[envLevel] !== undefined ? numeric[envLevel] : numeric.info;
+let minLevel = numeric[envLevel] !== undefined ? numeric[envLevel] : numeric.info;
 
 function emit(level, message, fields = {}) {
   if (numeric[level] < minLevel) return;
@@ -31,8 +31,9 @@ module.exports = {
   error: (msg, fields) => emit('error', msg, fields),
   fatal: (msg, fields) => emit('fatal', msg, fields),
   setLevel: (level) => {
-    if (numeric[level] !== undefined) {
-      return;
+    const normalized = String(level || '').toLowerCase();
+    if (numeric[normalized] !== undefined) {
+      minLevel = numeric[normalized];
     }
   },
 };

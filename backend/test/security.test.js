@@ -381,8 +381,8 @@ describe('Firebase Phone Number Verification token verification', () => {
   });
 });
 
-describe('K-1/K-4: register response is uniform and never returns a token', () => {
-  test('pickRegisterInput accepts missing passwordConfirm (defaults to password)', () => {
+describe('K-1/K-4: register response returns a bounded auth session', () => {
+  test('register returns token and user so the client does not auto-login', () => {
     const body = {
       email: 'a@b.com',
       password: 'Pa55w0rd!aaa',
@@ -393,8 +393,9 @@ describe('K-1/K-4: register response is uniform and never returns a token', () =
     const authRoute = require('../src/routes/auth');
     const registerSource = authRoute.register.toString();
     assert.match(registerSource, /success: true/);
-    assert.match(registerSource, /requiresLogin: true/);
-    assert.doesNotMatch(registerSource, /token: auth\.token/);
+    assert.match(registerSource, /token: auth\.token/);
+    assert.match(registerSource, /user: sanitizeUser/);
+    assert.doesNotMatch(registerSource, /requiresLogin: true/);
     assert.doesNotMatch(registerSource, /existingAccount/);
   });
 
@@ -803,7 +804,7 @@ describe('K-8: persistent rate limit module', () => {
     assert.equal(called, false);
   });
 
-  test('enforceRateLimit fails closed when PocketBase is unavailable', async () => {
+  test('enforceRateLimit falls back to local limits when PocketBase is unavailable', async () => {
     const { enforceRateLimit } = require('../src/rateLimit');
     const { pocketBase } = require('../src/pocketbase');
     pocketBase.adminRequest = async () => {
@@ -812,9 +813,13 @@ describe('K-8: persistent rate limit module', () => {
       throw error;
     };
 
+    const scope = `auth:login:fallback:${crypto.randomBytes(4).toString('hex')}`;
+    await enforceRateLimit({ scope, identity: 'ip|user', limit: 1, windowMs: 60_000 });
     await assert.rejects(
-      enforceRateLimit({ scope: 'auth:login', identity: 'ip|user', limit: 1, windowMs: 60_000 }),
-      (error) => error.status === 503 && error.details?.code === 'rate_limiter_unavailable',
+      enforceRateLimit({ scope, identity: 'ip|user', limit: 1, windowMs: 60_000 }),
+      (error) =>
+        error.status === 429 &&
+        ['rate_limited_local_fallback', 'rate_limited_local'].includes(error.details?.code),
     );
   });
 
@@ -1454,7 +1459,7 @@ describe('/users/me/update sensitive profile step-up', () => {
           body: {
             display_name: 'User One',
             username: 'oldname',
-            phone: '+905551119999',
+            phone: '0555 111 99 99',
             pin: '1234',
           },
         }),
@@ -1470,6 +1475,81 @@ describe('/users/me/update sensitive profile step-up', () => {
 });
 
 describe('Shared SMS OTP money verification', () => {
+  test('normalizes Turkish local phone numbers before starting Firebase phone auth', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const {
+      canonicalMoneyOtpContext,
+      startSmsOtp,
+    } = require('../src/smsOtp');
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousEcho = process.env.SMS_OTP_DEV_ECHO;
+    const previousProvider = process.env.SMS_PROVIDER;
+    const originals = {
+      adminRequest: pocketBase.adminRequest,
+      issueTwoFactorOtp: pocketBase.issueTwoFactorOtp,
+      createAuditLog: pocketBase.createAuditLog,
+    };
+    const context = canonicalMoneyOtpContext({
+      purpose: 'deposit',
+      amount: 20,
+      currency: 'usd',
+      network: 'btc',
+    });
+    try {
+      process.env.NODE_ENV = 'test';
+      process.env.SMS_OTP_DEV_ECHO = 'true';
+      process.env.SMS_PROVIDER = 'dev';
+      pocketBase.adminRequest = mockRateLimitAdminRequest();
+      pocketBase.issueTwoFactorOtp = async () => ({
+        id: 'otp_sms_local_phone',
+        expires_at: '2026-06-06T00:00:00.000Z',
+      });
+      pocketBase.createAuditLog = async () => ({ id: 'audit' });
+
+      const started = await startSmsOtp({
+        user: { id: 'u_sms_local_phone', phone: '0555 111 22 33' },
+        purpose: 'deposit',
+        context,
+        requestContext: {},
+      });
+      assert.equal(started.phone, '+905551112233');
+      assert.equal(started.provider, 'dev');
+    } finally {
+      Object.assign(pocketBase, originals);
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousEcho === undefined) delete process.env.SMS_OTP_DEV_ECHO;
+      else process.env.SMS_OTP_DEV_ECHO = previousEcho;
+      if (previousProvider === undefined) delete process.env.SMS_PROVIDER;
+      else process.env.SMS_PROVIDER = previousProvider;
+    }
+  });
+
+  test('SMS provider selection honors firebase_auth and dev config', () => {
+    const { getSmsProvider } = require('../src/smsOtp');
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousProvider = process.env.SMS_PROVIDER;
+    try {
+      process.env.NODE_ENV = 'development';
+      delete process.env.SMS_PROVIDER;
+      assert.equal(getSmsProvider(), 'firebase_auth');
+
+      process.env.SMS_PROVIDER = 'dev';
+      assert.equal(getSmsProvider(), 'dev');
+
+      process.env.SMS_PROVIDER = 'bogus';
+      assert.throws(
+        () => getSmsProvider(),
+        (error) => error.details?.code === 'sms_provider_invalid',
+      );
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousProvider === undefined) delete process.env.SMS_PROVIDER;
+      else process.env.SMS_PROVIDER = previousProvider;
+    }
+  });
+
   test('start uses five OTP requests per configured window by default', async () => {
     const { pocketBase } = require('../src/pocketbase');
     const {
@@ -1523,6 +1603,8 @@ describe('Shared SMS OTP money verification', () => {
         context,
         requestContext: {},
       });
+      assert.equal(started.provider, 'dev');
+      assert.equal(started.phone, '+905551112233');
       assert.equal(rateBodies.length, 1);
       assert.equal(rateBodies[0].count, 1);
       assert.equal(rateBodies[0].scope, 'sms-otp:deposit');
@@ -1597,6 +1679,8 @@ describe('Shared SMS OTP money verification', () => {
         context,
         requestContext: {},
       });
+      assert.equal(started.provider, 'dev');
+      assert.equal(started.metadata.delivery_provider, 'dev');
       assert.match(started.dev_otp, /^\d{6}$/);
       assert.notEqual(storedHash, started.dev_otp);
       assert.match(storedHash, /^[a-f0-9]{64}$/);
@@ -1636,6 +1720,8 @@ describe('Shared SMS OTP money verification', () => {
       verifySmsOtpTicket,
     } = require('../src/smsOtp');
     const { __setCertificatesForTests } = require('../src/firebaseAuth');
+    const { config } = require('../src/config');
+    const projectId = config.firebase?.authProjectId || 'chirpchat-test';
     const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
       modulusLength: 2048,
     });
@@ -1645,8 +1731,8 @@ describe('Shared SMS OTP money verification', () => {
     const token = signRs256Jwt(
       { alg: 'RS256', kid: keyId, typ: 'JWT' },
       {
-        iss: 'https://securetoken.google.com/chirpchat-test',
-        aud: 'chirpchat-test',
+        iss: `https://securetoken.google.com/${projectId}`,
+        aud: projectId,
         sub: 'firebase_uid_1',
         phone_number: '+905551112233',
         auth_time: now,
@@ -1769,21 +1855,42 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
     }
   });
 
-  test('low-value transfers are forced through 2FA by the default threshold', async () => {
+  test('unset transfer threshold does not force low-value transfers through 2FA', async () => {
     const { pocketBase } = require('../src/pocketbase');
     const { __testables } = require('../src/routes/transfers');
     const original = pocketBase.getTwoFactorSettings;
+    const previousThreshold = process.env.TRANSFER_2FA_THRESHOLD;
     try {
+      delete process.env.TRANSFER_2FA_THRESHOLD;
       pocketBase.getTwoFactorSettings = async () => ({ enabled: false, transfer_required: false });
       assert.equal(
         await __testables.isTwoFactorRequiredForTransfer(
           { id: 'user_without_2fa', two_factor_transfer_required: true },
           10,
         ),
-        true,
+        false,
       );
     } finally {
       pocketBase.getTwoFactorSettings = original;
+      if (previousThreshold === undefined) delete process.env.TRANSFER_2FA_THRESHOLD;
+      else process.env.TRANSFER_2FA_THRESHOLD = previousThreshold;
+    }
+  });
+
+  test('configured transfer threshold requires 2FA at and above the threshold', async () => {
+    const { pocketBase } = require('../src/pocketbase');
+    const { __testables } = require('../src/routes/transfers');
+    const original = pocketBase.getTwoFactorSettings;
+    const previousThreshold = process.env.TRANSFER_2FA_THRESHOLD;
+    try {
+      process.env.TRANSFER_2FA_THRESHOLD = '50';
+      pocketBase.getTwoFactorSettings = async () => ({ enabled: false, transfer_required: false });
+      assert.equal(await __testables.isTwoFactorRequiredForTransfer({ id: 'sender' }, 49.99), false);
+      assert.equal(await __testables.isTwoFactorRequiredForTransfer({ id: 'sender' }, 50), true);
+    } finally {
+      pocketBase.getTwoFactorSettings = original;
+      if (previousThreshold === undefined) delete process.env.TRANSFER_2FA_THRESHOLD;
+      else process.env.TRANSFER_2FA_THRESHOLD = previousThreshold;
     }
   });
 
@@ -1874,8 +1981,10 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
       verifyUserPin: pocketBase.verifyUserPin,
       applyInternalTransferWithLock: pocketBase.applyInternalTransferWithLock,
     };
+    const previousThreshold = process.env.TRANSFER_2FA_THRESHOLD;
     let appliedTransfer = false;
     try {
+      process.env.TRANSFER_2FA_THRESHOLD = '1';
       pocketBase.adminRequest = mockRateLimitAdminRequest();
       pocketBase.authenticateBearer = async () => ({
         id: 'sender',
@@ -1919,6 +2028,8 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
       assert.equal(appliedTransfer, false);
     } finally {
       Object.assign(pocketBase, originals);
+      if (previousThreshold === undefined) delete process.env.TRANSFER_2FA_THRESHOLD;
+      else process.env.TRANSFER_2FA_THRESHOLD = previousThreshold;
     }
   });
 
@@ -1942,7 +2053,9 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
       createAuditLog: pocketBase.createAuditLog,
       recordWebhookNonce: pocketBase.recordWebhookNonce,
     };
+    const previousThreshold = process.env.TRANSFER_2FA_THRESHOLD;
     try {
+      process.env.TRANSFER_2FA_THRESHOLD = '1';
       pocketBase.adminRequest = mockRateLimitAdminRequest();
       pocketBase.authenticateBearer = async () => ({
         id: 'sender',
@@ -2014,6 +2127,8 @@ describe('YA-3/YP-8: 2FA challenge is required for high-value transfers', () => 
       assert.equal(nonceRecords, 1);
     } finally {
       Object.assign(pocketBase, originals);
+      if (previousThreshold === undefined) delete process.env.TRANSFER_2FA_THRESHOLD;
+      else process.env.TRANSFER_2FA_THRESHOLD = previousThreshold;
     }
   });
 });
@@ -2371,7 +2486,7 @@ describe('PocketBase helpers for phase-2', () => {
   });
 });
 
-describe('HIGH_VALUE_2FA_THRESHOLD defaults to 5000', () => {
+describe('TRANSFER_2FA_THRESHOLD policy helper', () => {
   test('transfers.js exposes a HMAC-signed ticket helper', () => {
     const fs = require('node:fs');
     const path = require('node:path');
@@ -2379,7 +2494,7 @@ describe('HIGH_VALUE_2FA_THRESHOLD defaults to 5000', () => {
       path.join(__dirname, '..', 'src', 'routes', 'transfers.js'),
       'utf8',
     );
-    assert.match(source, /HIGH_VALUE_2FA_THRESHOLD/);
+    assert.match(source, /getHighValueTwoFactorThreshold/);
     assert.match(source, /createTransferChallengeTicket/);
     assert.match(source, /hmac.*sha256/i);
   });
@@ -2610,6 +2725,136 @@ describe('Production env validation rejects weak secrets', () => {
   });
 });
 
+describe('Auth registration reliability', () => {
+  test('duplicate email registration returns an explicit conflict', async () => {
+    const { register } = require('../src/routes/auth');
+    const { pocketBase } = require('../src/pocketbase');
+    const originals = {
+      adminRequest: pocketBase.adminRequest,
+      findUserByEmail: pocketBase.findUserByEmail,
+      createAuditLog: pocketBase.createAuditLog,
+    };
+    pocketBase.adminRequest = mockRateLimitAdminRequest();
+    pocketBase.findUserByEmail = async () => ({ id: 'existing-user', email: 'taken@example.com' });
+    pocketBase.createAuditLog = async () => ({ id: 'audit' });
+
+    try {
+      const req = makeHttpReq({
+        method: 'POST',
+        url: '/auth/register',
+        body: {
+          first_name: 'Test',
+          last_name: 'User',
+          username: 'testuser',
+          email: 'taken@example.com',
+          password: 'Password123',
+          passwordConfirm: 'Password123',
+          pin: '1234',
+        },
+      });
+      const res = makeJsonRes();
+
+      await assert.rejects(
+        register(req, res),
+        (error) =>
+          error.status === 409 &&
+          error.details?.code === 'email_already_exists' &&
+          error.details?.field === 'email',
+      );
+    } finally {
+      Object.assign(pocketBase, originals);
+    }
+  });
+
+  test('audit-log failure does not break successful registration', async () => {
+    const { register } = require('../src/routes/auth');
+    const { pocketBase } = require('../src/pocketbase');
+    const originals = {
+      adminRequest: pocketBase.adminRequest,
+      findUserByEmail: pocketBase.findUserByEmail,
+      assertUsernameAvailable: pocketBase.assertUsernameAvailable,
+      assertDeviceCanRegister: pocketBase.assertDeviceCanRegister,
+      createUser: pocketBase.createUser,
+      ensureDefaultWallet: pocketBase.ensureDefaultWallet,
+      ensurePaymentProfile: pocketBase.ensurePaymentProfile,
+      upsertTwoFactorSettings: pocketBase.upsertTwoFactorSettings,
+      ensureSecurityPin: pocketBase.ensureSecurityPin,
+      upsertDeviceSession: pocketBase.upsertDeviceSession,
+      recordDeviceUsage: pocketBase.recordDeviceUsage,
+      authenticateUser: pocketBase.authenticateUser,
+      issueDeviceTokenRecord: pocketBase.issueDeviceTokenRecord,
+      createAuditLog: pocketBase.createAuditLog,
+    };
+    const user = { id: 'new-user', email: 'new@example.com', username: 'newuser' };
+    pocketBase.adminRequest = mockRateLimitAdminRequest();
+    pocketBase.findUserByEmail = async () => null;
+    pocketBase.assertUsernameAvailable = async () => null;
+    pocketBase.assertDeviceCanRegister = async () => ({ id: 'device' });
+    pocketBase.createUser = async () => user;
+    pocketBase.ensureDefaultWallet = async () => ({ id: 'wallet' });
+    pocketBase.ensurePaymentProfile = async () => ({ id: 'payment' });
+    pocketBase.upsertTwoFactorSettings = async () => ({ id: 'two-factor' });
+    pocketBase.ensureSecurityPin = async () => ({ id: 'pin' });
+    pocketBase.upsertDeviceSession = async () => ({ id: 'session' });
+    pocketBase.recordDeviceUsage = async () => ({ id: 'usage' });
+    pocketBase.authenticateUser = async () => ({ token: 'auth-token', record: user });
+    pocketBase.issueDeviceTokenRecord = async () => ({ id: 'device-token' });
+    pocketBase.createAuditLog = async () => {
+      throw new Error('audit down');
+    };
+
+    try {
+      const req = makeHttpReq({
+        method: 'POST',
+        url: '/auth/register',
+        body: {
+          first_name: 'New',
+          last_name: 'User',
+          username: 'newuser',
+          email: 'new@example.com',
+          password: 'Password123',
+          passwordConfirm: 'Password123',
+          pin: '1234',
+        },
+      });
+      const res = makeJsonRes();
+
+      await register(req, res);
+      assert.equal(res.statusCode, 201);
+      const body = JSON.parse(res.body);
+      assert.equal(body.success, true);
+      assert.equal(body.token, 'auth-token');
+      assert.equal(body.user.email, 'new@example.com');
+    } finally {
+      Object.assign(pocketBase, originals);
+    }
+  });
+});
+
+describe('PocketBase request deadlines', () => {
+  test('slow PocketBase fetch times out with a clear code', async () => {
+    const { __testables } = require('../src/pocketbase');
+    const originalFetch = global.fetch;
+    global.fetch = async (_url, init = {}) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      });
+
+    try {
+      await assert.rejects(
+        __testables.fetchWithTimeout('http://127.0.0.1:8090/api/health', {}, 10),
+        (error) => error.status === 503 && error.details?.code === 'pocketbase_timeout',
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
 describe('Logger emits structured JSON', () => {
   test('info line is JSON with ts, level, msg', () => {
     const logger = require('../src/logger');
@@ -2648,6 +2893,28 @@ describe('Logger emits structured JSON', () => {
     const record = JSON.parse(captured.trim());
     assert.equal(record.level, 'error');
     assert.equal(record.code, 'X');
+  });
+
+  test('setLevel respects the level argument', () => {
+    const logger = require('../src/logger');
+    const original = process.stdout.write.bind(process.stdout);
+    let captured = '';
+    process.stdout.write = (chunk) => {
+      captured += chunk;
+      return true;
+    };
+    try {
+      logger.setLevel('error');
+      logger.info('hidden');
+      logger.setLevel('debug');
+      logger.debug('visible');
+      logger.setLevel('info');
+    } finally {
+      process.stdout.write = original;
+      logger.setLevel('info');
+    }
+    assert.doesNotMatch(captured, /hidden/);
+    assert.match(captured, /visible/);
   });
 });
 

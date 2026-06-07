@@ -29,7 +29,6 @@
 - Keep `SMS_OTP_DEV_ECHO=false` in production and in real device testing. If it is enabled for isolated local tests, never expose that build to users.
 - Users must have phone numbers in international E.164 format, for example `+905551112233`.
 - If Firebase Auth is missing, the backend intentionally fails closed and deposit/transfer must not continue.
-- Twilio remains supported only as an optional fallback provider when `SMS_PROVIDER=twilio` and Twilio credentials are configured.
 
 ## NOWPayments IPN ingress
 

@@ -310,8 +310,15 @@ function hashForAudit(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex');
 }
 
-const HIGH_VALUE_2FA_THRESHOLD = Number(process.env.TRANSFER_2FA_THRESHOLD || 0);
 const TWO_FA_CHALLENGE_TTL_MS = 2 * 60 * 1000;
+
+function getHighValueTwoFactorThreshold() {
+  if (process.env.TRANSFER_2FA_THRESHOLD === undefined || process.env.TRANSFER_2FA_THRESHOLD === '') {
+    return Number.POSITIVE_INFINITY;
+  }
+  const threshold = Number(process.env.TRANSFER_2FA_THRESHOLD);
+  return Number.isFinite(threshold) && threshold > 0 ? threshold : Number.POSITIVE_INFINITY;
+}
 
 function getTransferTwoFactorSecret() {
   const secret = config.security.transferTwoFactorSecret;
@@ -377,7 +384,7 @@ function hashOtpCode(code, salt) {
 }
 
 async function isTwoFactorRequiredForTransfer(sender, amount) {
-  if (Number(amount) >= HIGH_VALUE_2FA_THRESHOLD) return true;
+  if (Number(amount) >= getHighValueTwoFactorThreshold()) return true;
   const settings = await pocketBase.getTwoFactorSettings(sender.id).catch(() => null);
   return Boolean(settings?.enabled && settings?.transfer_required);
 }
@@ -440,7 +447,9 @@ async function startTransferTwoFactorChallenge(req, res) {
     success: true,
     two_factor_required: true,
     two_factor_method: 'sms_otp',
+    provider: started.provider,
     expires_at: started.expires_at,
+    metadata: started.metadata,
     ...(started.dev_otp ? { dev_otp: started.dev_otp } : {}),
   };
   sendJson(res, 200, response);
@@ -474,6 +483,7 @@ module.exports = {
 
 module.exports.__testables = {
   createIdempotentReferenceId,
+  getHighValueTwoFactorThreshold,
   getTransferTwoFactorSecret,
   isTwoFactorRequiredForTransfer,
   requireIdempotencyKey,

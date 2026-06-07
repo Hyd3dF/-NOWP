@@ -21,6 +21,14 @@ const PUBLIC_DETAIL_KEYS = new Set([
   'request_id',
   'validation_fields',
 ]);
+const SAFE_SERVER_ERROR_CODES = new Set([
+  'pocketbase_timeout',
+  'firebase_auth_certs_timeout',
+  'firebase_auth_certs_unavailable',
+  'sms_provider_timeout',
+  'sms_provider_unavailable',
+  'rate_limiter_unavailable',
+]);
 
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body);
@@ -127,6 +135,7 @@ function getClientIp(req) {
 
 function getRequestContext(req) {
   return {
+    requestId: sanitizeRequestId(req.headers['x-oroya-request-id']),
     ipAddress: getClientIp(req),
     deviceInfo: sanitizeHeaderValue(req.headers['user-agent'], 300),
     deviceId: sanitizeHeaderValue(req.headers['x-oroya-device-id'], MAX_HEADER_CHARS),
@@ -166,11 +175,14 @@ function isTrustedProxy(remoteAddress) {
 function getSafeErrorResponse(error) {
   const status = error.status && error.status >= 400 ? error.status : 500;
   const isServerError = status >= 500;
-  const message = isServerError ? 'Internal server error.' : error.message;
   const details = isServerError ? undefined : getPublicDetails(error.details);
   const serverDetails = isServerError ? getPublicDetails(error.details) : undefined;
   const requestId = details?.request_id || serverDetails?.request_id;
   const code = details?.code || serverDetails?.code;
+  const message =
+    isServerError && !SAFE_SERVER_ERROR_CODES.has(String(code || ''))
+      ? 'Internal server error.'
+      : error.message;
 
   return {
     status,
@@ -182,6 +194,11 @@ function getSafeErrorResponse(error) {
       ...(requestId ? { request_id: requestId } : {}),
     },
   };
+}
+
+function sanitizeRequestId(value) {
+  const clean = sanitizeHeaderValue(value, 120);
+  return /^[a-zA-Z0-9._:-]{8,120}$/.test(clean) ? clean : '';
 }
 
 function getPublicDetails(details) {

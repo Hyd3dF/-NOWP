@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const { HttpError, getBearerToken, getRequestContext, parseJsonBody, sendJson } = require('../http');
 const { pocketBase, sanitizeUser } = require('../pocketbase');
 const { enforceRateLimit } = require('../rateLimit');
+const logger = require('../logger');
 const {
   buildDeviceFingerprint,
   issueDeviceToken,
@@ -9,6 +10,7 @@ const {
   verifyDeviceToken,
   hashToken,
 } = require('../deviceToken');
+const { normalizePhoneNumber } = require('../phone');
 
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 8;
@@ -17,6 +19,7 @@ const REGISTER_EMAIL_MAX_PER_HOUR = Number(process.env.AUTH_REGISTER_EMAIL_MAX_P
 const LOGIN_MAX_PER_5_MIN = Number(process.env.AUTH_LOGIN_MAX_PER_5_MIN || 10);
 const LOGIN_ACCOUNT_MAX_PER_15_MIN = Number(process.env.AUTH_LOGIN_ACCOUNT_MAX_PER_15_MIN || 20);
 const PASSWORD_RESET_MAX_PER_HOUR = Number(process.env.AUTH_PASSWORD_RESET_MAX_PER_HOUR || 5);
+const MAX_PROFILE_PHOTO_BASE64_CHARS = Number(process.env.MAX_PROFILE_PHOTO_BASE64_CHARS || 2_000_000);
 
 const loginAttempts = new Map();
 
@@ -33,7 +36,7 @@ function pickRegisterInput(body) {
     last_name: typeof body.last_name === 'string' ? body.last_name.trim() : '',
     username: typeof body.username === 'string' ? body.username.trim() : '',
     email: requireString(body, 'email').toLowerCase(),
-    phone: typeof body.phone === 'string' ? body.phone.trim() : '',
+    phone: normalizePhoneNumber(typeof body.phone === 'string' ? body.phone : ''),
     password: typeof body.password === 'string' ? body.password : '',
     passwordConfirm:
       typeof body.passwordConfirm === 'string' ? body.passwordConfirm : body.password,
@@ -53,6 +56,17 @@ function auditHash(value) {
     .createHash('sha256')
     .update(String(value || '').trim().toLowerCase())
     .digest('hex');
+}
+
+function writeAuditLog(entry) {
+  pocketBase.createAuditLog(entry).catch((error) => {
+    logger.warn('audit_log_write_failed', {
+      action: entry?.action || '',
+      code: error?.details?.code || error?.code || '',
+      status: error?.status || 0,
+      message: error?.message || '',
+    });
+  });
 }
 
 function getLoginAttemptKey(identity, context) {
@@ -154,6 +168,18 @@ async function register(req, res) {
   if (input.passwordConfirm !== input.password) {
     throw new HttpError(400, 'passwordConfirm must match password.');
   }
+  if (input.profile_photo_base64.length > MAX_PROFILE_PHOTO_BASE64_CHARS) {
+    throw new HttpError(413, 'Profile photo is too large. Please choose a smaller photo or continue without one.', {
+      code: 'request_body_too_large',
+      field: 'profile_photo_file',
+    });
+  }
+  if (input.profile_photo_base64 && !/^image\/(jpeg|jpg|png|webp)$/i.test(input.profile_photo_mime || 'image/jpeg')) {
+    throw new HttpError(400, 'Profile photo must be a JPEG, PNG, or WebP image.', {
+      code: 'invalid_profile_photo',
+      field: 'profile_photo_file',
+    });
+  }
 
   await enforceRateLimit({
     scope: 'auth:register',
@@ -169,43 +195,55 @@ async function register(req, res) {
   });
 
   let user = null;
-  let createdNewAccount = false;
+  let auth = null;
   try {
     const existingUser = await pocketBase.findUserByEmail(input.email);
 
     if (existingUser) {
-      user = existingUser;
-    } else {
-      await pocketBase.assertUsernameAvailable(input.username);
-      await pocketBase.assertDeviceCanRegister(requestContext);
-      user = await pocketBase.createUser(input);
-      await pocketBase.createWallet(user.id);
-      await pocketBase.upsertTwoFactorSettings(user.id, true);
-      createdNewAccount = true;
-    }
-
-    await pocketBase.ensureDefaultWallet(user.id);
-    await pocketBase.ensurePaymentProfile(user);
-    await pocketBase.ensureSecurityPin(user).catch(() => {});
-    await pocketBase.upsertDeviceSession(user.id, requestContext).catch(() => {});
-    if (createdNewAccount) {
-      await pocketBase.recordDeviceUsage(requestContext, {
-        userId: user.id,
-        accountCreated: true,
+      throw new HttpError(409, 'An account already exists for this email. Please log in or reset your password.', {
+        code: 'email_already_exists',
+        field: 'email',
       });
     }
-    await pocketBase.createAuditLog({
+
+    await Promise.all([
+      pocketBase.assertUsernameAvailable(input.username),
+      pocketBase.assertDeviceCanRegister(requestContext),
+    ]);
+    user = await pocketBase.createUser(input);
+    await Promise.all([
+      pocketBase.ensureDefaultWallet(user.id),
+      pocketBase.ensurePaymentProfile(user),
+      pocketBase.upsertTwoFactorSettings(user.id, true),
+      pocketBase.ensureSecurityPin(user).catch(() => null),
+      pocketBase.upsertDeviceSession(user.id, requestContext).catch(() => null),
+    ]);
+    await pocketBase.recordDeviceUsage(requestContext, {
       userId: user.id,
-      action: createdNewAccount ? 'auth.register' : 'auth.register_existing_email_noop',
+      accountCreated: true,
+    });
+    auth = await pocketBase.authenticateUser(input.email, input.password);
+    const fingerprint = buildDeviceFingerprint(requestContext);
+    const issued = await issueAndPersistDeviceToken(user.id, requestContext, fingerprint);
+    writeAuditLog({
+      userId: user.id,
+      action: 'auth.register',
       ...requestContext,
       metadata: {
         email_hash: auditHash(input.email),
         username: input.username,
-        created: createdNewAccount,
+        created: true,
       },
     });
+    sendJson(res, 201, {
+      success: true,
+      token: auth.token,
+      device_token: issued.token,
+      device_token_expires_at: new Date(issued.expiresAt * 1000).toISOString(),
+      user: sanitizeUser(auth.record || user),
+    });
   } catch (error) {
-    await pocketBase.createAuditLog({
+    writeAuditLog({
       action: 'auth.register_failed',
       ...requestContext,
       metadata: {
@@ -217,12 +255,6 @@ async function register(req, res) {
     });
     throw error;
   }
-
-  sendJson(res, 201, {
-    success: true,
-    requiresLogin: true,
-    message: 'Registration received. Please sign in to continue.',
-  });
 }
 
 async function login(req, res) {
@@ -291,7 +323,7 @@ async function login(req, res) {
     const fingerprint = buildDeviceFingerprint(requestContext);
     const issued = await issueAndPersistDeviceToken(user.id, requestContext, fingerprint);
 
-    await pocketBase.createAuditLog({
+    writeAuditLog({
       userId: user.id,
       action: 'auth.login',
       ...requestContext,
@@ -312,7 +344,7 @@ async function login(req, res) {
         loggedIn: true,
       }).catch(() => {});
     }
-    await pocketBase.createAuditLog({
+    writeAuditLog({
       action: 'auth.login_failed',
       ...requestContext,
       metadata: {

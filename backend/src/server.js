@@ -40,6 +40,10 @@ const { sendTransfer, startTransferTwoFactorChallenge } = require('./routes/tran
 const { me, paymentProfile, updateMe } = require('./routes/users');
 const { myWallets } = require('./routes/wallets');
 
+const SERVER_REQUEST_TIMEOUT_MS = Number(process.env.SERVER_REQUEST_TIMEOUT_MS || 60_000);
+const SERVER_KEEP_ALIVE_TIMEOUT_MS = Number(process.env.SERVER_KEEP_ALIVE_TIMEOUT_MS || 5_000);
+const SERVER_HEADERS_TIMEOUT_MS = Number(process.env.SERVER_HEADERS_TIMEOUT_MS || 15_000);
+
 const routes = new Map([
   ['POST /auth/register', register],
   ['POST /auth/login', login],
@@ -86,7 +90,7 @@ function applyCors(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type,Authorization,X-Oroya-Device-Id,X-Oroya-Device-Token,X-Oroya-Client-Platform,X-Oroya-App-Version,X-NOWPayments-Sig',
+    'Content-Type,Authorization,X-Oroya-Request-Id,X-Oroya-Device-Id,X-Oroya-Device-Token,X-Oroya-Client-Platform,X-Oroya-App-Version,X-NOWPayments-Sig',
   );
   res.setHeader('Access-Control-Max-Age', '600');
   res.setHeader('Vary', 'Origin');
@@ -239,7 +243,10 @@ async function start() {
     }
 
     handleRequest(req, res).catch((error) => {
-      const requestId = crypto.randomBytes(8).toString('hex');
+      const headerRequestId = String(req.headers['x-oroya-request-id'] || '');
+      const requestId = /^[a-zA-Z0-9._:-]{8,120}$/.test(headerRequestId)
+        ? headerRequestId
+        : crypto.randomBytes(8).toString('hex');
       if (!error.details || typeof error.details !== 'object' || Array.isArray(error.details)) {
         error.details = {};
       }
@@ -257,6 +264,19 @@ async function start() {
       });
       sendJson(res, status, body);
     });
+  });
+
+  server.requestTimeout = SERVER_REQUEST_TIMEOUT_MS;
+  server.keepAliveTimeout = SERVER_KEEP_ALIVE_TIMEOUT_MS;
+  server.headersTimeout = Math.max(SERVER_HEADERS_TIMEOUT_MS, SERVER_KEEP_ALIVE_TIMEOUT_MS + 1000);
+  server.timeout = SERVER_REQUEST_TIMEOUT_MS;
+  server.on('clientError', (error, socket) => {
+    logger.warn('client_error', {
+      code: error.code || '',
+      message: error.message,
+    });
+    if (!socket.writable) return;
+    socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
   });
 
   server.listen(config.port, config.host, () => {

@@ -7,6 +7,7 @@ const {
   phoneNumbersMatch,
   verifyFirebaseAuthIdToken,
 } = require('./firebaseAuth');
+const { normalizePhoneNumber } = require('./phone');
 
 const DEFAULT_OTP_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_OTP_TICKET_TTL_MS = 5 * 60 * 1000;
@@ -36,14 +37,14 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
   if (!user?.id) {
     throw new HttpError(401, 'Authentication is required.', { code: 'auth_required' });
   }
-  const phone = String(user.phone || '').trim();
-  if (!phone) {
+  const rawPhone = String(user.phone || '').trim();
+  if (!rawPhone) {
     throw new HttpError(400, 'A phone number is required for SMS verification.', {
       code: 'sms_phone_missing',
     });
   }
-  const normalizedPhone = phone.replace(/\s+/g, '');
-  if (!/^\+[1-9]\d{7,14}$/.test(normalizedPhone)) {
+  const normalizedPhone = normalizePhoneNumber(rawPhone);
+  if (!normalizedPhone) {
     throw new HttpError(400, 'Phone number must be in international format.', {
       code: 'sms_phone_invalid',
     });
@@ -74,6 +75,9 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
       purpose: normalizedPurpose,
       phone: normalizedPhone,
       expires_at: new Date(Date.now() + getOtpTtlMs()).toISOString(),
+      metadata: {
+        native_phone_auth_required: true,
+      },
       sms_otp_challenge: createSmsOtpChallenge({
         userId: user.id,
         purpose: normalizedPurpose,
@@ -112,8 +116,14 @@ async function startSmsOtp({ user, purpose, context, requestContext }) {
 
   return {
     success: true,
+    provider: smsResult.provider,
     purpose: normalizedPurpose,
+    phone: normalizedPhone,
     expires_at: record.expires_at,
+    metadata: {
+      sent: Boolean(smsResult.sent),
+      delivery_provider: smsResult.provider,
+    },
     ...(smsResult.devCode ? { dev_otp: smsResult.devCode } : {}),
   };
 }
@@ -142,52 +152,80 @@ async function verifySmsOtp({
     });
   }
   const provider = getSmsProvider();
-  if (provider === 'dev' && process.env.NODE_ENV === 'test') {
-    const cleanCode = String(code || '').trim();
-    if (!/^\d{6}$/.test(cleanCode)) {
-      throw new HttpError(400, 'SMS verification code must be 6 digits.', {
-        code: 'sms_otp_format',
-      });
-    }
-    const codeHash = hashOtpCode({
-      userId: user.id,
+  if (provider === 'dev') {
+    return verifyServerSmsOtp({
+      user,
       purpose: normalizedPurpose,
       context,
-      code: cleanCode,
+      code,
+      requestContext,
+      provider,
     });
-    const consumed = await pocketBase.consumeTwoFactorOtp(user.id, normalizedPurpose, codeHash, context);
-    if (!consumed.ok) {
-      await pocketBase.createAuditLog({
-        userId: user.id,
-        action: 'security.sms_otp_failed',
-        ...requestContext,
-        metadata: {
-          purpose: normalizedPurpose,
-          reason: consumed.reason || 'unknown',
-        },
-      }).catch(() => {});
-      throw new HttpError(401, 'SMS verification failed.', {
-        code: consumed.reason === 'locked' ? 'sms_otp_locked' : 'sms_otp_invalid',
-      });
-    }
-
-    const ticket = createSmsOtpTicket({
-      userId: user.id,
-      purpose: normalizedPurpose,
-      context,
-      otpId: consumed.record.id,
-      expiresAt: Date.now() + getOtpTicketTtlMs(),
-    });
-    return {
-      success: true,
-      sms_otp_ticket: ticket,
-      expires_at: new Date(Date.now() + getOtpTicketTtlMs()).toISOString(),
-    };
   }
 
   throw new HttpError(400, 'Firebase verification token is required.', {
     code: 'firebase_auth_token_missing',
   });
+}
+
+async function verifyServerSmsOtp({
+  user,
+  purpose,
+  context,
+  code,
+  requestContext,
+  provider,
+}) {
+  const cleanCode = String(code || '').trim();
+  if (!/^\d{6}$/.test(cleanCode)) {
+    throw new HttpError(400, 'SMS verification code must be 6 digits.', {
+      code: 'sms_otp_format',
+    });
+  }
+  const codeHash = hashOtpCode({
+    userId: user.id,
+    purpose,
+    context,
+    code: cleanCode,
+  });
+  const consumed = await pocketBase.consumeTwoFactorOtp(user.id, purpose, codeHash, context);
+  if (!consumed.ok) {
+    await pocketBase.createAuditLog({
+      userId: user.id,
+      action: 'security.sms_otp_failed',
+      ...requestContext,
+      metadata: {
+        purpose,
+        provider,
+        reason: consumed.reason || 'unknown',
+      },
+    }).catch(() => {});
+    throw new HttpError(401, 'SMS verification failed.', {
+      code: consumed.reason === 'locked' ? 'sms_otp_locked' : 'sms_otp_invalid',
+    });
+  }
+
+  const ticket = createSmsOtpTicket({
+    userId: user.id,
+    purpose,
+    context,
+    otpId: `${provider}:${consumed.record.id}`,
+    expiresAt: Date.now() + getOtpTicketTtlMs(),
+  });
+  await pocketBase.createAuditLog({
+    userId: user.id,
+    action: 'security.sms_otp_verified',
+    ...requestContext,
+    metadata: {
+      purpose,
+      provider,
+    },
+  }).catch(() => {});
+  return {
+    success: true,
+    sms_otp_ticket: ticket,
+    expires_at: new Date(Date.now() + getOtpTicketTtlMs()).toISOString(),
+  };
 }
 
 async function verifyFirebaseSmsOtp({
@@ -202,7 +240,7 @@ async function verifyFirebaseSmsOtp({
     userId: user.id,
     purpose,
     context,
-    phone: user.phone,
+    phone: normalizePhoneNumber(user.phone),
   });
   if (!challenge) {
     throw new HttpError(401, 'SMS verification must be started again.', {
@@ -391,9 +429,6 @@ function generateOtpCode() {
 
 async function sendSms(phone, message) {
   const provider = getSmsProvider();
-  if (provider === 'twilio') {
-    return sendTwilioSms(phone, message);
-  }
   if (provider === 'dev' && process.env.NODE_ENV !== 'production' && process.env.SMS_OTP_DEV_ECHO === 'true') {
     const match = message.match(/\b(\d{6})\b/);
     return { provider: 'dev', sent: true, devCode: match?.[1] || '' };
@@ -410,7 +445,7 @@ function assertSmsProviderConfigured(provider = getSmsProvider()) {
       code: 'firebase_auth_not_configured',
     });
   }
-  if (provider === 'dev' && process.env.NODE_ENV === 'test') {
+  if (provider === 'dev' && process.env.NODE_ENV !== 'production' && process.env.SMS_OTP_DEV_ECHO === 'true') {
     return;
   }
   throw new HttpError(503, 'SMS provider is not configured.', {
@@ -420,39 +455,20 @@ function assertSmsProviderConfigured(provider = getSmsProvider()) {
 
 function getSmsProvider() {
   const provider = String(process.env.SMS_PROVIDER || config.sms?.provider || 'firebase_auth').trim().toLowerCase();
-  if (process.env.NODE_ENV === 'test' && provider === 'dev') {
+  if (provider === 'firebase_auth') {
+    return 'firebase_auth';
+  }
+  if (provider === 'dev') {
+    if (process.env.NODE_ENV === 'production') {
+      throw new HttpError(503, 'SMS provider is not configured.', {
+        code: 'sms_provider_not_configured',
+      });
+    }
     return 'dev';
   }
-  return 'firebase_auth';
-}
-
-async function sendTwilioSms(phone, message) {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
-  const authToken = process.env.TWILIO_AUTH_TOKEN || '';
-  const from = process.env.TWILIO_FROM_NUMBER || '';
-  if (!accountSid || !authToken || !from) {
-    throw new HttpError(503, 'SMS provider is not configured.', {
-      code: 'sms_provider_not_configured',
-    });
-  }
-  const params = new URLSearchParams({ To: phone, From: from, Body: message });
-  const response = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(accountSid)}/Messages.json`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: params.toString(),
-    },
-  );
-  if (!response.ok) {
-    throw new HttpError(503, 'SMS provider rejected the request.', {
-      code: 'sms_provider_unavailable',
-    });
-  }
-  return { provider: 'twilio', sent: true };
+  throw new HttpError(503, 'SMS provider is invalid.', {
+    code: 'sms_provider_invalid',
+  });
 }
 
 function normalizePurpose(value) {
@@ -525,6 +541,7 @@ module.exports = {
   verifySmsOtpChallenge,
   verifySmsOtpTicket,
   hashOtpCode,
+  getSmsProvider,
   getOtpRateLimit,
   getOtpRateWindowMs,
 };

@@ -2,9 +2,10 @@ const crypto = require('node:crypto');
 const { HttpError, getBearerToken, getRequestContext, parseJsonBody, sendJson } = require('../http');
 const { verifyDeviceToken } = require('../deviceToken');
 const { pocketBase, sanitizeUser } = require('../pocketbase');
+const { normalizePhoneNumber } = require('../phone');
 
 function normalizePhone(value) {
-  return String(value || '').replace(/[^\d+]/g, '');
+  return normalizePhoneNumber(value) || String(value || '').replace(/[^\d+]/g, '');
 }
 
 function normalizeUsername(value) {
@@ -117,7 +118,7 @@ async function updateMe(req, res) {
   const input = {
     displayName: typeof body.display_name === 'string' ? body.display_name : '',
     username: typeof body.username === 'string' ? body.username.trim().toLowerCase() : '',
-    phone: typeof body.phone === 'string' ? body.phone.trim() : '',
+    phone: normalizePhoneNumber(typeof body.phone === 'string' ? body.phone : ''),
     profile_photo_base64:
       typeof body.profile_photo_base64 === 'string' ? body.profile_photo_base64 : '',
     profile_photo_mime:

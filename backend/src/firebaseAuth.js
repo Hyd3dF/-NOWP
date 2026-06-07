@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const { config } = require('./config');
 const { HttpError } = require('./http');
+const { normalizePhoneNumber } = require('./phone');
 
 const FIREBASE_CERTS_URL =
   'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
@@ -191,12 +192,6 @@ function parseMaxAge(value) {
   const match = String(value || '').match(/max-age=(\d+)/i);
   if (!match) return DEFAULT_CERT_CACHE_MS;
   return Math.max(60_000, Number(match[1]) * 1000);
-}
-
-function normalizePhoneNumber(value) {
-  const clean = String(value || '').replace(/[^\d+]/g, '');
-  if (!/^\+[1-9]\d{7,14}$/.test(clean)) return '';
-  return clean;
 }
 
 function phoneNumbersMatch(left, right) {
