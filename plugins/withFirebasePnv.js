@@ -6,7 +6,7 @@ const {
   withDangerousMod,
 } = require('@expo/config-plugins');
 
-const PNV_DEPENDENCY = 'implementation("com.google.firebase:firebase-pnv:16.0.0-beta01")';
+const PNV_DEPENDENCY = 'implementation("com.google.firebase:firebase-pnv:16.1.0")';
 
 function withFirebasePnv(config) {
   config = withAppBuildGradle(config, (modConfig) => {
@@ -100,7 +100,7 @@ class FirebasePhoneNumberVerificationModule(
 
   @ReactMethod
   fun getVerifiedPhoneNumber(privacyPolicyUrl: String, promise: Promise) {
-    val activity = currentActivity
+    val activity = getCurrentActivity()
     if (activity == null) {
       promise.reject("firebase_pnv_activity_missing", "Android activity is not available.")
       return
@@ -111,7 +111,9 @@ class FirebasePhoneNumberVerificationModule(
       return
     }
 
-    FirebasePhoneNumberVerification.getInstance()
+    val fpnv = FirebasePhoneNumberVerification.getInstance()
+
+    fpnv
       .getVerificationSupportInfo()
       .addOnSuccessListener { results ->
         if (!results.any { it.isSupported() }) {
@@ -119,8 +121,8 @@ class FirebasePhoneNumberVerificationModule(
           return@addOnSuccessListener
         }
 
-        FirebasePhoneNumberVerification.getInstance(activity)
-          .getVerifiedPhoneNumber(privacyPolicyUrl)
+        fpnv
+          .getVerifiedPhoneNumber(activity)
           .addOnSuccessListener { result ->
             val response = Arguments.createMap()
             response.putString("phoneNumber", result.getPhoneNumber())
