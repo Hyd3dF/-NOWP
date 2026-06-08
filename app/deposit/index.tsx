@@ -142,10 +142,12 @@ export default function DepositScreen() {
     try {
       await startDepositOtp();
     } catch (error) {
-      const message = getDepositErrorMessage(getPublicErrorCode(error));
+      const code = getPublicErrorCode(error);
+      const message = getDepositErrorMessage(code) || getPublicErrorMessage(error);
       const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
+      const debugCode = code ? ` Code: ${code}` : '';
       setError(
-        `${message || 'Deposit address could not be created right now. Please try again in a moment.'}${requestId}`,
+        `${message || 'Deposit address could not be created right now. Please try again in a moment.'}${requestId}${debugCode}`,
       );
     } finally {
       setIsLoading(false);
@@ -159,9 +161,11 @@ export default function DepositScreen() {
     try {
       await startDepositOtp();
     } catch (error) {
-      const message = getDepositErrorMessage(getPublicErrorCode(error));
+      const code = getPublicErrorCode(error);
+      const message = getDepositErrorMessage(code) || getPublicErrorMessage(error);
       const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
-      setOtpError(`${message || 'Could not send a new SMS code. Please try again.'}${requestId}`);
+      const debugCode = code ? ` Code: ${code}` : '';
+      setOtpError(`${message || 'Could not send a new SMS code. Please try again.'}${requestId}${debugCode}`);
     } finally {
       setIsLoading(false);
     }
@@ -187,9 +191,11 @@ export default function DepositScreen() {
       setOtpChallenge('');
       await submitDeposit(verified.sms_otp_ticket);
     } catch (error) {
-      const message = getDepositErrorMessage(getPublicErrorCode(error));
+      const code = getPublicErrorCode(error);
+      const message = getDepositErrorMessage(code) || getPublicErrorMessage(error);
       const requestId = error instanceof ApiError && error.requestId ? ` Ref: ${error.requestId}` : '';
-      setOtpError(`${message || 'SMS verification failed. Please try again.'}${requestId}`);
+      const debugCode = code ? ` Code: ${code}` : '';
+      setOtpError(`${message || 'SMS verification failed. Please try again.'}${requestId}${debugCode}`);
     } finally {
       setIsLoading(false);
     }
@@ -473,6 +479,14 @@ function getPublicErrorCode(error: unknown) {
   return '';
 }
 
+function getPublicErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message?: unknown }).message || '').slice(0, 180);
+  }
+  return '';
+}
+
 function getDepositErrorMessage(code: string) {
   switch (code) {
     case 'auth_failed':
@@ -507,6 +521,10 @@ function getDepositErrorMessage(code: string) {
       return 'Phone verification is not configured yet. Please contact support.';
     case 'firebase_auth_native_module_missing':
       return 'Phone verification is not available in this test build. Please use an installed app build to continue.';
+    case 'firebase_auth_app_not_authorized':
+      return 'This Android app is not authorized in Firebase. Check the Android SHA fingerprints.';
+    case 'firebase_auth_missing_client_identifier':
+      return 'Firebase Android configuration is outdated. Install the latest app build and try again.';
     case 'firebase_auth_quota_exceeded':
     case 'firebase_auth_too_many_requests':
       return 'SMS verification limit has been reached. Please try again later.';

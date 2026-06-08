@@ -108,9 +108,15 @@ function mapFirebasePhoneAuthError(error: unknown) {
     error && typeof error === 'object' && 'code' in error
       ? String((error as { code?: unknown }).code || '')
       : '';
+  const rawMessage =
+    error && typeof error === 'object' && 'message' in error
+      ? String((error as { message?: unknown }).message || '')
+      : '';
   const code = rawCode.replace(/^auth\//, 'firebase_auth_').replace(/-/g, '_');
   const mapped = code || 'firebase_auth_failed';
   const messages: Record<string, string> = {
+    firebase_auth_app_not_authorized: 'This Android app is not authorized in Firebase. Check SHA fingerprints.',
+    firebase_auth_missing_client_identifier: 'Firebase Android client configuration is missing or outdated.',
     firebase_auth_invalid_phone_number: 'Phone number is invalid.',
     firebase_auth_quota_exceeded: 'SMS verification limit has been reached. Try again later.',
     firebase_auth_too_many_requests: 'Too many SMS attempts. Try again later.',
@@ -120,6 +126,6 @@ function mapFirebasePhoneAuthError(error: unknown) {
   };
   return new FirebasePhoneAuthError(
     mapped,
-    messages[mapped] || 'Phone verification failed.',
+    messages[mapped] || rawMessage || 'Phone verification failed.',
   );
 }
