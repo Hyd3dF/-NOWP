@@ -1,9 +1,0 @@
-export const APP_NAME = 'Oroya';
-export const DEFAULT_CURRENCY = 'USD';
-export const MAX_TRANSACTION_AMOUNT = 50000;
-export const MIN_TRANSACTION_AMOUNT = 0.01;
-export const PIN_LENGTH = 4;
-export const AUTO_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
-export const RECENT_CONTACTS_LIMIT = 6;
-export const RECENT_TRANSACTIONS_LIMIT = 5;
-export const TRANSACTIONS_PAGE_SIZE = 20;
